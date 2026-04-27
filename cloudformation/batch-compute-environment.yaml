@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Batch Compute Environment for sre-aws-batch-telemetry.
+  Uses Fargate (serverless) as the compute type — no EC2 instances to manage.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-aws-batch-telemetry
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs for Fargate tasks
+  SecurityGroupId:
+    Type: String
+    Description: Security group ID for the Batch tasks (from security-groups stack)
+  MaxvCpus:
+    Type: Number
+    Default: 16
+    Description: Maximum number of vCPUs across all Fargate tasks
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  BatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      ComputeEnvironmentName: !Sub "${ServiceName}-${EnvironmentName}-ce"
+      Type: MANAGED
+      State: ENABLED
+      ComputeResources:
+        Type: FARGATE
+        MaxvCpus: !Ref MaxvCpus
+        Subnets: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+      Tags:
+        Environment: !Ref EnvironmentName
+        Service: !Ref ServiceName
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+
+Outputs:
+  ComputeEnvironmentArn:
+    Description: ARN of the Batch Compute Environment
+    Value: !Ref BatchComputeEnvironment
+    Export:
+      Name: !Sub "${AWS::StackName}-ComputeEnvironmentArn"

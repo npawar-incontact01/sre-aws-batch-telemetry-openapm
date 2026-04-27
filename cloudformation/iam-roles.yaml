@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  IAM Roles for sre-aws-batch-telemetry.
+  Creates a Batch Execution Role (used by Fargate to pull ECR images and write logs)
+  and a Batch Job Role (assumed by the running container).
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Deployment environment name (e.g. dev, staging, prod)
+    Default: dev
+  ServiceName:
+    Type: String
+    Description: Service / application name used for tagging
+    Default: sre-aws-batch-telemetry
+  Team:
+    Type: String
+    Description: Owning team for cost allocation
+    Default: sre
+  CostCenter:
+    Type: String
+    Description: Cost center code
+    Default: "0000"
+
+Resources:
+
+  # -------------------------------------------------------------------------
+  # Batch Execution Role
+  # Used by the ECS/Fargate agent to pull the container image from ECR and
+  # write logs to CloudWatch. This is NOT the role the code runs under.
+  # -------------------------------------------------------------------------
+  BatchExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ServiceName}-${EnvironmentName}-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRPullPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ECRGetToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: ECRPullImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ServiceName}"
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CWLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/batch/${ServiceName}:*"
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Team
+          Value: !Ref Team
+        - Key: CostCenter
+          Value: !Ref CostCenter
+
+  # -------------------------------------------------------------------------
+  # Batch Job Role
+  # Assumed by the running container process. Keep minimal — extend only if
+  # the job needs to call AWS APIs (S3, DynamoDB, SSM, etc.).
+  # -------------------------------------------------------------------------
+  BatchJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ServiceName}-${EnvironmentName}-job-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MinimalJobPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Deny everything by default — add Allow statements as needed
+              - Sid: AllowSSMParameterRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ServiceName}/*"
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Team
+          Value: !Ref Team
+        - Key: CostCenter
+          Value: !Ref CostCenter
+
+Outputs:
+  BatchExecutionRoleArn:
+    Description: ARN of the Batch Execution Role
+    Value: !GetAtt BatchExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ExecutionRoleArn"
+
+  BatchJobRoleArn:
+    Description: ARN of the Batch Job Role
+    Value: !GetAtt BatchJobRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-JobRoleArn"

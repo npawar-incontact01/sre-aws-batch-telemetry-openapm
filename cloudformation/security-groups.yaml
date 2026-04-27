@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Security Groups for sre-aws-batch-telemetry.
+  Creates a Security Group for the Batch Fargate tasks allowing
+  outbound OTLP traffic to the OpenAPM endpoint (ports 4317 and 4318).
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Deployment environment name (e.g. dev, staging, prod)
+    Default: dev
+  ServiceName:
+    Type: String
+    Description: Service / application name
+    Default: sre-aws-batch-telemetry
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the Batch tasks will run
+  OtelEndpointCidr:
+    Type: String
+    Description: >
+      CIDR block or IP range of the OTel Collector endpoint.
+      Use the specific IP of apm-na1.service.nicecxone-dev.com/32 when known,
+      or the VPC CIDR of mon-dev if peered.
+    Default: "0.0.0.0/0"
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  BatchTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ServiceName}-${EnvironmentName}-batch-sg"
+      GroupDescription: >
+        Security group for AWS Batch Fargate tasks running sre-aws-batch-telemetry.
+        Allows outbound OTLP (gRPC :4317 and HTTP :4318) to the OTel Collector.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        # OTLP gRPC
+        - IpProtocol: tcp
+          FromPort: 4317
+          ToPort: 4317
+          CidrIp: !Ref OtelEndpointCidr
+          Description: OTLP gRPC to OpenAPM endpoint
+        # OTLP HTTP
+        - IpProtocol: tcp
+          FromPort: 4318
+          ToPort: 4318
+          CidrIp: !Ref OtelEndpointCidr
+          Description: OTLP HTTP to OpenAPM endpoint
+        # HTTPS — needed for ECR image pull and CloudWatch Logs (if no VPC endpoints)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+          Description: HTTPS for ECR pull and CloudWatch Logs API
+      Tags:
+        - Key: Name
+          Value: !Sub "${ServiceName}-${EnvironmentName}-batch-sg"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Team
+          Value: !Ref Team
+        - Key: CostCenter
+          Value: !Ref CostCenter
+
+Outputs:
+  BatchTaskSecurityGroupId:
+    Description: ID of the Batch task security group
+    Value: !Ref BatchTaskSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-BatchTaskSGId"

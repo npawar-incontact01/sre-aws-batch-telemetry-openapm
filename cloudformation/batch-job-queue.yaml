@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Batch Job Queue for sre-aws-batch-telemetry.
+  Routes submitted jobs to the Fargate Compute Environment.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-aws-batch-telemetry
+  ComputeEnvironmentArn:
+    Type: String
+    Description: ARN of the Batch Compute Environment (from batch-compute-environment stack)
+  Priority:
+    Type: Number
+    Default: 1
+    Description: Job queue priority (higher = preferred)
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: !Sub "${ServiceName}-${EnvironmentName}-queue"
+      State: ENABLED
+      Priority: !Ref Priority
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref ComputeEnvironmentArn
+      Tags:
+        Environment: !Ref EnvironmentName
+        Service: !Ref ServiceName
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+
+Outputs:
+  JobQueueArn:
+    Description: ARN of the Batch Job Queue
+    Value: !Ref BatchJobQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-JobQueueArn"
+
+  JobQueueName:
+    Description: Name of the Batch Job Queue
+    Value: !Sub "${ServiceName}-${EnvironmentName}-queue"
+    Export:
+      Name: !Sub "${AWS::StackName}-JobQueueName"
