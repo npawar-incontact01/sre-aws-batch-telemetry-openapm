@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project sends AWS Batch job telemetry (traces and metrics) to OpenAPM using the OpenTelemetry (OTLP) protocol. The Batch job runs as a Fargate container in the `ic-dev` AWS account and exports OTLP data directly to the shared OTel Collector hosted in `mon-dev`.
+This project sends AWS Batch job telemetry (traces and metrics) to OpenAPM using the OpenTelemetry (OTLP) protocol. The Batch job runs as a Fargate container in the `mon-sandbox` AWS account and exports OTLP data directly to the shared OTel Collector hosted in `mon-dev`.
 
 ---
 
@@ -10,7 +10,7 @@ This project sends AWS Batch job telemetry (traces and metrics) to OpenAPM using
 
 ```mermaid
 graph TB
-    subgraph ic-dev["AWS Account: ic-dev (300813158921)"]
+    subgraph mon-sandbox["AWS Account: mon-sandbox (723346695882)"]
         direction TB
         subgraph VPC["Customer VPC"]
             subgraph PrivateSubnet["Private Subnet(s)"]
@@ -102,7 +102,7 @@ Custom metrics emitted:
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://apm-na1.service.nicecxone-dev.com:4317` | OTLP collector endpoint |
 | `OTEL_SERVICE_NAME` | `sre-aws-batch-telemetry` | Service name in traces/metrics |
-| `OTEL_RESOURCE_ATTRIBUTES` | `environment=ic-dev,account.id=300813158921` | Additional resource tags |
+| `OTEL_RESOURCE_ATTRIBUTES` | `environment=mon-sandbox,account.id=723346695882` | Additional resource tags |
 
 ---
 

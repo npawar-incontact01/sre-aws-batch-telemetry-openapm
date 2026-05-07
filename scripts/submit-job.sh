@@ -2,7 +2,7 @@
 # submit-job.sh — Submit a test AWS Batch job
 #
 # Usage:
-#   bash scripts/submit-job.sh [--env dev] [--region us-east-1]
+#   bash scripts/submit-job.sh [--env dev] [--region us-west-2]
 #
 # Reads job queue and job definition names from CloudFormation stack outputs.
 
@@ -13,7 +13,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SERVICE_NAME="sre-aws-batch-telemetry"
 ENV="${ENV:-dev}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-west-2}"
 JOB_NAME="${SERVICE_NAME}-test-$(date +%Y%m%d%H%M%S)"
 
 # ---------------------------------------------------------------------------

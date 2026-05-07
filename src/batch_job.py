@@ -37,7 +37,7 @@ OTEL_ENDPOINT = os.environ.get(
 )
 SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "sre-aws-batch-telemetry")
 RESOURCE_ATTRS_RAW = os.environ.get(
-    "OTEL_RESOURCE_ATTRIBUTES", "environment=ic-dev,account.id=300813158921"
+    "OTEL_RESOURCE_ATTRIBUTES", "environment=mon-sandbox,account.id=723346695882"
 )
 
 

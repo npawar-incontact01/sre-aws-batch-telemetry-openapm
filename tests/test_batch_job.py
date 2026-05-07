@@ -24,8 +24,8 @@ import batch_job  # noqa: E402  (import after path manipulation)
 
 class TestParseResourceAttributes(unittest.TestCase):
     def test_parses_key_value_pairs(self):
-        result = batch_job._parse_resource_attributes("environment=ic-dev,account.id=300813158921")
-        self.assertEqual(result, {"environment": "ic-dev", "account.id": "300813158921"})
+        result = batch_job._parse_resource_attributes("environment=mon-sandbox,account.id=723346695882")
+        self.assertEqual(result, {"environment": "mon-sandbox", "account.id": "723346695882"})
 
     def test_single_pair(self):
         result = batch_job._parse_resource_attributes("key=value")

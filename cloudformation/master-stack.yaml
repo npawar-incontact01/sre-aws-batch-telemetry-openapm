@@ -28,9 +28,19 @@ Parameters:
 
   ContainerImage:
     Type: String
+    Default: "public.ecr.aws/docker/library/python:3.11-slim"
     Description: >
-      Full ECR image URI.
-      Example: 300813158921.dkr.ecr.us-east-1.amazonaws.com/sre-aws-batch-telemetry:latest
+      Container image URI. Defaults to public Python 3.11 slim image.
+
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+    Description: S3 bucket containing batch_job.py and requirements.txt
+
+  CodeS3Prefix:
+    Type: String
+    Default: "code"
+    Description: S3 key prefix where code files are stored
 
   OtelEndpoint:
     Type: String
@@ -38,7 +48,7 @@ Parameters:
 
   OtelResourceAttributes:
     Type: String
-    Default: "environment=ic-dev,account.id=300813158921"
+    Default: "environment=mon-sandbox,account.id=723346695882"
 
   OtelEndpointCidr:
     Type: String
@@ -150,6 +160,8 @@ Resources:
         EnvironmentName: !Ref EnvironmentName
         ServiceName: !Ref ServiceName
         ContainerImage: !Ref ContainerImage
+        CodeS3Bucket: !Ref CodeS3Bucket
+        CodeS3Prefix: !Ref CodeS3Prefix
         ExecutionRoleArn: !GetAtt IamRolesStack.Outputs.BatchExecutionRoleArn
         JobRoleArn: !GetAtt IamRolesStack.Outputs.BatchJobRoleArn
         OtelEndpoint: !Ref OtelEndpoint

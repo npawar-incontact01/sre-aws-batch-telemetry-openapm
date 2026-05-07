@@ -6,8 +6,8 @@
 #
 # Environment variables (or AWS CLI defaults):
 #   AWS_ACCOUNT_ID   — AWS account ID (default: resolved via STS)
-#   AWS_REGION       — AWS region (default: us-east-1)
-#   AWS_PROFILE      — AWS CLI named profile (optional)
+#   AWS_REGION       — AWS region (default: us-west-2)
+#   AWS_PROFILE      — AWS CLI named profile (optional, default: mon-sandbox)
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVICE_NAME="sre-aws-batch-telemetry"
 IMAGE_TAG="latest"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-west-2}"
 
 # ---------------------------------------------------------------------------
 # Argument parsing

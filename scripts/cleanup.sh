@@ -2,7 +2,7 @@
 # cleanup.sh — Tear down all sre-aws-batch-telemetry resources
 #
 # Usage:
-#   bash scripts/cleanup.sh [--env dev] [--region us-east-1]
+#   bash scripts/cleanup.sh [--env dev] [--region us-west-2]
 #
 # WARNING: This will delete the CloudFormation stack AND all ECR images.
 # Use with caution in non-dev environments.
@@ -14,7 +14,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SERVICE_NAME="sre-aws-batch-telemetry"
 ENV="${ENV:-dev}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-west-2}"
 SKIP_ECR="${SKIP_ECR:-false}"
 
 # ---------------------------------------------------------------------------

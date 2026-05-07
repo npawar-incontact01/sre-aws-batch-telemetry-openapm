@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   AWS Batch Job Definition for sre-aws-batch-telemetry.
   Fargate platform with OTLP environment variables pre-configured.
+  Uses a public Python image and fetches application code from S3 at runtime.
 
 Parameters:
   EnvironmentName:
@@ -12,9 +13,17 @@ Parameters:
     Default: sre-aws-batch-telemetry
   ContainerImage:
     Type: String
+    Default: "public.ecr.aws/docker/library/python:3.11-slim"
     Description: >
-      Full ECR image URI including tag.
-      Example: 300813158921.dkr.ecr.us-east-1.amazonaws.com/sre-aws-batch-telemetry:latest
+      Container image URI. Defaults to public Python 3.11 slim image.
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+    Description: S3 bucket containing batch_job.py and requirements.txt
+  CodeS3Prefix:
+    Type: String
+    Default: "code"
+    Description: S3 key prefix where code files are stored
   ExecutionRoleArn:
     Type: String
     Description: ARN of the Batch Execution Role (from iam-roles stack)
@@ -27,7 +36,7 @@ Parameters:
     Description: OTLP exporter endpoint
   OtelResourceAttributes:
     Type: String
-    Default: "environment=ic-dev,account.id=300813158921"
+    Default: "environment=mon-sandbox,account.id=723346695882"
     Description: Additional OTel resource attributes (key=value comma-separated)
   JobVcpu:
     Type: String
@@ -55,6 +64,16 @@ Resources:
         - FARGATE
       ContainerProperties:
         Image: !Ref ContainerImage
+        Command:
+          - "/bin/sh"
+          - "-c"
+          - !Sub |
+              pip install --no-cache-dir awscli >/dev/null 2>&1 && \
+              mkdir -p /app && cd /app && \
+              aws s3 cp s3://${CodeS3Bucket}/${CodeS3Prefix}/requirements.txt . && \
+              aws s3 cp s3://${CodeS3Bucket}/${CodeS3Prefix}/batch_job.py . && \
+              pip install --no-cache-dir -r requirements.txt && \
+              python batch_job.py
         ExecutionRoleArn: !Ref ExecutionRoleArn
         JobRoleArn: !Ref JobRoleArn
         FargatePlatformConfiguration:
@@ -73,6 +92,10 @@ Resources:
             Value: !Ref OtelResourceAttributes
           - Name: PYTHONUNBUFFERED
             Value: "1"
+          - Name: CODE_S3_BUCKET
+            Value: !Ref CodeS3Bucket
+          - Name: CODE_S3_PREFIX
+            Value: !Ref CodeS3Prefix
         LogConfiguration:
           LogDriver: awslogs
           Options:
@@ -84,7 +107,7 @@ Resources:
       RetryStrategy:
         Attempts: 2
       Timeout:
-        AttemptDurationSeconds: 300
+        AttemptDurationSeconds: 600
       Tags:
         Environment: !Ref EnvironmentName
         Service: !Ref ServiceName

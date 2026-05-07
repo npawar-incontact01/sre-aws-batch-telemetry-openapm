@@ -13,13 +13,13 @@
 
 # Configurable variables (override on CLI: make deploy ENV=staging)
 ENV            ?= dev
-AWS_REGION     ?= us-east-1
+AWS_REGION     ?= us-west-2
 AWS_ACCOUNT_ID ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 SERVICE_NAME   := sre-aws-batch-telemetry
 IMAGE_TAG      ?= latest
-TEMPLATES_BUCKET ?=
-VPC_ID         ?=
-SUBNET_IDS     ?=
+TEMPLATES_BUCKET ?= sre-batch-telemetry-cfn-templates-723346695882
+VPC_ID         ?= vpc-0693b34275513631c
+SUBNET_IDS     ?= subnet-0cdc843ec821d3ea5,subnet-071fb611b8b3abf42,subnet-00c9a34807a6d3742
 CONTAINER_IMAGE ?= $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/$(SERVICE_NAME):$(IMAGE_TAG)
 
 # Python test runner

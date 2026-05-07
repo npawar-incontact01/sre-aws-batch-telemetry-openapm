@@ -4,21 +4,23 @@ POC project for sending AWS Batch telemetry data to OpenAPM via OpenTelemetry (O
 
 ## Project Purpose & Scope
 
-This repository demonstrates how to instrument AWS Batch jobs (Fargate-based) with OpenTelemetry (OTLP) and export traces and metrics to an OpenAPM endpoint (Grafana-compatible). It replicates the same telemetry pattern already used by a working Lambda in `ic-dev`, applied to AWS Batch workloads.
+This repository demonstrates how to instrument AWS Batch jobs (Fargate-based) with OpenTelemetry (OTLP) and export traces and metrics to an OpenAPM endpoint (Grafana-compatible). It replicates the same telemetry pattern already used by a working Lambda, applied to AWS Batch workloads in the `mon-sandbox` account.
 
 | Item | Value |
 |---|---|
-| Source AWS Account | ic-dev (300813158921) |
+| Source AWS Account | mon-sandbox (723346695882) |
 | Destination AWS Account | mon-dev (300101013673) |
 | OpenAPM Ingestion Endpoint | `apm-na1.service.nicecxone-dev.com` (Private DNS) |
 | Data Format | OTLP (OpenTelemetry Protocol) |
 | Compute Type | AWS Batch on Fargate |
+| Region | us-west-2 (Oregon) |
+| VPC | vpc-0693b34275513631c (shared_eks) |
 
 ## Architecture
 
 ```mermaid
 graph LR
-    subgraph ic-dev [AWS Account: ic-dev 300813158921]
+    subgraph mon-sandbox [AWS Account: mon-sandbox 723346695882]
         BJ[AWS Batch Job\nFargate Container\nbatch_job.py]
         ECR[Amazon ECR\nContainer Image]
         CW[CloudWatch Logs]
@@ -42,7 +44,7 @@ graph LR
 
 ## Prerequisites
 
-- AWS CLI v2 configured with profiles for `ic-dev` account
+- AWS CLI v2 configured with profile for `mon-sandbox` account
 - Docker 20+
 - Python 3.11+
 - `make` utility
@@ -90,9 +92,9 @@ cd sre-aws-batch-telemetry-openapm
 ### 2. Build and push Docker image to ECR
 
 ```bash
-export AWS_PROFILE=ic-dev
-export AWS_REGION=us-east-1
-export AWS_ACCOUNT_ID=300813158921
+export AWS_PROFILE=mon-sandbox
+export AWS_REGION=us-west-2
+export AWS_ACCOUNT_ID=723346695882
 
 make build-and-push
 # or directly:

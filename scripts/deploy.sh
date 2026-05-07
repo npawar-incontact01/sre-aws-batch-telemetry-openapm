@@ -4,10 +4,10 @@
 # Usage:
 #   bash scripts/deploy.sh \
 #     --env dev \
-#     --vpc-id vpc-xxxxxxxx \
-#     --subnet-ids "subnet-aaa,subnet-bbb" \
-#     --container-image "300813158921.dkr.ecr.us-east-1.amazonaws.com/sre-aws-batch-telemetry:latest" \
-#     --templates-bucket my-cfn-templates-bucket
+#     --vpc-id vpc-0693b34275513631c \
+#     --subnet-ids "subnet-0cdc843ec821d3ea5,subnet-071fb611b8b3abf42,subnet-00c9a34807a6d3742" \
+#     --container-image "723346695882.dkr.ecr.us-west-2.amazonaws.com/sre-aws-batch-telemetry:latest" \
+#     --templates-bucket sre-batch-telemetry-cfn-templates-723346695882
 #
 # All parameters can also be set as environment variables:
 #   ENV, VPC_ID, SUBNET_IDS, CONTAINER_IMAGE, TEMPLATES_BUCKET
@@ -22,13 +22,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 SERVICE_NAME="sre-aws-batch-telemetry"
 ENV="${ENV:-dev}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
-VPC_ID="${VPC_ID:-}"
-SUBNET_IDS="${SUBNET_IDS:-}"
-CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
-TEMPLATES_BUCKET="${TEMPLATES_BUCKET:-}"
+AWS_REGION="${AWS_REGION:-us-west-2}"
+VPC_ID="${VPC_ID:-vpc-0693b34275513631c}"
+SUBNET_IDS="${SUBNET_IDS:-subnet-0cdc843ec821d3ea5,subnet-071fb611b8b3abf42,subnet-00c9a34807a6d3742}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim}"
+TEMPLATES_BUCKET="${TEMPLATES_BUCKET:-sre-batch-telemetry-cfn-templates-723346695882}"
+CODE_S3_BUCKET="${CODE_S3_BUCKET:-sre-batch-telemetry-code-723346695882}"
+CODE_S3_PREFIX="${CODE_S3_PREFIX:-code}"
 OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://apm-na1.service.nicecxone-dev.com:4317}"
-OTEL_RESOURCE_ATTRS="${OTEL_RESOURCE_ATTRS:-environment=ic-dev,account.id=300813158921}"
+OTEL_RESOURCE_ATTRS="${OTEL_RESOURCE_ATTRS:-environment=mon-sandbox,account.id=723346695882}"
 TEAM="${TEAM:-sre}"
 COST_CENTER="${COST_CENTER:-0000}"
 
@@ -53,7 +55,7 @@ done
 # Validation
 # ---------------------------------------------------------------------------
 ERRORS=0
-for var_name in VPC_ID SUBNET_IDS CONTAINER_IMAGE TEMPLATES_BUCKET; do
+for var_name in VPC_ID SUBNET_IDS TEMPLATES_BUCKET; do
   val="${!var_name}"
   if [[ -z "${val}" ]]; then
     echo "ERROR: --${var_name//_/-} (or \$${var_name}) is required" >&2

@@ -101,13 +101,20 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Deny everything by default — add Allow statements as needed
               - Sid: AllowSSMParameterRead
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ServiceName}/*"
+              - Sid: AllowCodeS3Read
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::sre-batch-telemetry-code-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::sre-batch-telemetry-code-${AWS::AccountId}/*"
       Tags:
         - Key: Environment
           Value: !Ref EnvironmentName
