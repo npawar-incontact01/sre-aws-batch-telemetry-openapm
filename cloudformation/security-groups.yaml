@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Security Groups for sre-aws-batch-telemetry.
   Creates a Security Group for the Batch Fargate tasks allowing
-  outbound OTLP traffic to the OpenAPM endpoint (ports 4317 and 4318).
+  outbound OTLP traffic to the OpenAPM endpoint (ports 4317, 4318, and 3100).
 
 Parameters:
   EnvironmentName:
@@ -36,9 +36,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub "${ServiceName}-${EnvironmentName}-batch-sg"
-      GroupDescription: >
-        Security group for AWS Batch Fargate tasks running sre-aws-batch-telemetry.
-        Allows outbound OTLP (gRPC :4317 and HTTP :4318) to the OTel Collector.
+      GroupDescription: "SG for AWS Batch Fargate tasks - allows outbound OTLP gRPC 4317 and HTTP 4318 to OTel Collector"
       VpcId: !Ref VpcId
       SecurityGroupEgress:
         # OTLP gRPC
@@ -53,6 +51,12 @@ Resources:
           ToPort: 4318
           CidrIp: !Ref OtelEndpointCidr
           Description: OTLP HTTP to OpenAPM endpoint
+        # Loki ingestion (Firelens)
+        - IpProtocol: tcp
+          FromPort: 3100
+          ToPort: 3100
+          CidrIp: !Ref OtelEndpointCidr
+          Description: Loki log ingestion for Firelens
         # HTTPS — needed for ECR image pull and CloudWatch Logs (if no VPC endpoints)
         - IpProtocol: tcp
           FromPort: 443

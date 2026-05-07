@@ -1,7 +1,11 @@
 """
 AWS Batch job with OpenTelemetry instrumentation.
 
-Sends traces and metrics to an OpenAPM endpoint via OTLP/gRPC.
+Sends traces, metrics, and logs to OpenAPM via OTLP/HTTP (port 4318):
+  - /v1/traces  → Tempo
+  - /v1/metrics → Mimir
+  - /v1/logs    → Loki
+
 All OTel configuration is read from environment variables (12-factor style).
 """
 
@@ -12,8 +16,12 @@ import sys
 import time
 
 from opentelemetry import metrics, trace
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -33,11 +41,11 @@ logger = logging.getLogger("batch_job")
 
 OTEL_ENDPOINT = os.environ.get(
     "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "https://apm-na1.service.nicecxone-dev.com:4317",
+    "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318",
 )
 SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "sre-aws-batch-telemetry")
 RESOURCE_ATTRS_RAW = os.environ.get(
-    "OTEL_RESOURCE_ATTRIBUTES", "environment=mon-sandbox,account.id=723346695882"
+    "OTEL_RESOURCE_ATTRIBUTES", "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2"
 )
 
 
@@ -54,7 +62,7 @@ def _parse_resource_attributes(raw: str) -> dict:
 
 def setup_tracing(resource: Resource) -> TracerProvider:
     """Initialise and register a global TracerProvider with OTLP exporter."""
-    exporter = OTLPSpanExporter(endpoint=OTEL_ENDPOINT)
+    exporter = OTLPSpanExporter(endpoint=OTEL_ENDPOINT + "/v1/traces")
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
@@ -64,11 +72,24 @@ def setup_tracing(resource: Resource) -> TracerProvider:
 
 def setup_metrics(resource: Resource) -> MeterProvider:
     """Initialise and register a global MeterProvider with OTLP exporter."""
-    exporter = OTLPMetricExporter(endpoint=OTEL_ENDPOINT)
+    exporter = OTLPMetricExporter(endpoint=OTEL_ENDPOINT + "/v1/metrics")
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=5_000)
     provider = MeterProvider(resource=resource, metric_readers=[reader])
     metrics.set_meter_provider(provider)
     logger.info("MeterProvider initialised, exporting to %s", OTEL_ENDPOINT)
+    return provider
+
+
+def setup_logging(resource: Resource) -> LoggerProvider:
+    """Initialise and register a global LoggerProvider with OTLP exporter."""
+    exporter = OTLPLogExporter(endpoint=OTEL_ENDPOINT + "/v1/logs")
+    provider = LoggerProvider(resource=resource)
+    provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    set_logger_provider(provider)
+    # Attach OTel handler to root logger so all log records are exported
+    handler = LoggingHandler(level=logging.INFO, logger_provider=provider)
+    logging.getLogger().addHandler(handler)
+    logger.info("LoggerProvider initialised, exporting to %s", OTEL_ENDPOINT)
     return provider
 
 
@@ -183,6 +204,7 @@ def main() -> None:
 
     tracer_provider = setup_tracing(resource)
     meter_provider = setup_metrics(resource)
+    logger_provider = setup_logging(resource)
 
     tracer = trace.get_tracer(SERVICE_NAME)
     meter = metrics.get_meter(SERVICE_NAME)
@@ -194,14 +216,11 @@ def main() -> None:
         logger.error("Batch job exited with error — flushing telemetry…")
         sys.exit(1)
     finally:
-        # Flush and shutdown both providers so no telemetry is lost
+        # Flush and shutdown all providers so no telemetry is lost
         tracer_provider.shutdown()
         meter_provider.shutdown()
+        logger_provider.shutdown()
         logger.info("OTel providers shut down cleanly.")
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

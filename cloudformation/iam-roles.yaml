@@ -69,7 +69,18 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/batch/${ServiceName}:*"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/batch/${ServiceName}:*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/batch/${ServiceName}/firelens:*"
+        - PolicyName: FirelensPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AllowFirehoseForFirelens
+                Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: "*"
       Tags:
         - Key: Environment
           Value: !Ref EnvironmentName

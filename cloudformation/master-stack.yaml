@@ -44,11 +44,11 @@ Parameters:
 
   OtelEndpoint:
     Type: String
-    Default: "https://apm-na1.service.nicecxone-dev.com:4317"
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4317"
 
   OtelResourceAttributes:
     Type: String
-    Default: "environment=mon-sandbox,account.id=723346695882"
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2"
 
   OtelEndpointCidr:
     Type: String

@@ -1,51 +1,63 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  AWS Batch Job Definition for sre-aws-batch-telemetry.
-  Fargate platform with OTLP environment variables pre-configured.
-  Uses a public Python image and fetches application code from S3 at runtime.
+  AWS Batch Job Definition with Firelens log routing to OpenAPM/Loki.
+  Uses multi-container support: App container + Fluent Bit (Firelens) sidecar.
+  Traces and metrics go direct via OTLP/HTTP; logs go via Firelens to Loki.
 
 Parameters:
   EnvironmentName:
     Type: String
     Default: dev
+    AllowedValues: [dev, staging, prod]
   ServiceName:
     Type: String
     Default: sre-aws-batch-telemetry
   ContainerImage:
     Type: String
     Default: "public.ecr.aws/docker/library/python:3.11-slim"
-    Description: >
-      Container image URI. Defaults to public Python 3.11 slim image.
+    Description: Consumer's application container image
   CodeS3Bucket:
     Type: String
     Default: "sre-batch-telemetry-code-723346695882"
-    Description: S3 bucket containing batch_job.py and requirements.txt
+    Description: S3 bucket containing application code
   CodeS3Prefix:
     Type: String
     Default: "code"
     Description: S3 key prefix where code files are stored
   ExecutionRoleArn:
     Type: String
-    Description: ARN of the Batch Execution Role (from iam-roles stack)
+    Description: ARN of the Batch Execution Role
   JobRoleArn:
     Type: String
-    Description: ARN of the Batch Job Role (from iam-roles stack)
+    Description: ARN of the Batch Job Role
   OtelEndpoint:
     Type: String
     Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
-    Description: OTLP exporter endpoint
+    Description: OTLP/HTTP endpoint for traces and metrics
+  OtelEndpointHost:
+    Type: String
+    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+    Description: OpenAPM host (for Fluent Bit Loki output)
+  OtelEndpointPort:
+    Type: String
+    Default: "3100"
+    Description: Loki ingestion port on OpenAPM endpoint
+  OpenapmProductName:
+    Type: String
+    Default: "sre-batch-telemetry"
+    Description: Product name for Grafana filtering
   OtelResourceAttributes:
     Type: String
     Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2"
-    Description: Additional OTel resource attributes (key=value comma-separated)
+    Description: OTel resource attributes (key=value comma-separated)
   JobVcpu:
     Type: String
     Default: "0.25"
-    Description: vCPU allocation for the Fargate task
+    AllowedValues: ["0.25", "0.5", "1", "2", "4"]
   JobMemory:
-    Type: Number
-    Default: 512
-    Description: Memory (MiB) allocation for the Fargate task
+    Type: String
+    Default: "512"
+    AllowedValues: ["512", "1024", "2048", "4096", "8192"]
   Team:
     Type: String
     Default: sre
@@ -54,6 +66,31 @@ Parameters:
     Default: "0000"
 
 Resources:
+
+  BatchJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}"
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Team
+          Value: !Ref Team
+
+  # Fluent Bit sidecar log group (for firelens container own logs)
+  FirelensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      RetentionInDays: 7
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
 
   BatchJobDefinition:
     Type: AWS::Batch::JobDefinition
@@ -97,11 +134,19 @@ Resources:
           - Name: CODE_S3_PREFIX
             Value: !Ref CodeS3Prefix
         LogConfiguration:
-          LogDriver: awslogs
+          LogDriver: awsfirelens
           Options:
-            awslogs-group: !Sub "/aws/batch/${ServiceName}"
-            awslogs-region: !Ref AWS::Region
-            awslogs-stream-prefix: !Ref EnvironmentName
+            Name: grafana-loki
+            Url: !Sub "https://${OtelEndpointHost}:${OtelEndpointPort}/loki/api/v1/push"
+            Labels: !Sub "{job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\"}"
+            RemoveKeys: "container_id,ecs_task_arn"
+            LabelKeys: "level,logger"
+            LineFormat: "key_value"
+            TenantID: ""
+            BatchWait: "1"
+            BatchSize: "1048576"
+            Tls: "On"
+            TlsVerify: "On"
         NetworkConfiguration:
           AssignPublicIp: DISABLED
       RetryStrategy:
@@ -114,30 +159,11 @@ Resources:
         Team: !Ref Team
         CostCenter: !Ref CostCenter
 
-  BatchJobLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/batch/${ServiceName}"
-      RetentionInDays: 30
-      Tags:
-        - Key: Environment
-          Value: !Ref EnvironmentName
-        - Key: Service
-          Value: !Ref ServiceName
-        - Key: Team
-          Value: !Ref Team
-        - Key: CostCenter
-          Value: !Ref CostCenter
-
 Outputs:
   JobDefinitionArn:
     Description: ARN of the Batch Job Definition
     Value: !Ref BatchJobDefinition
-    Export:
-      Name: !Sub "${AWS::StackName}-JobDefinitionArn"
-
-  JobDefinitionName:
-    Description: Name of the Batch Job Definition
-    Value: !Sub "${ServiceName}-${EnvironmentName}-job"
-    Export:
-      Name: !Sub "${AWS::StackName}-JobDefinitionName"
+  LogGroupName:
+    Value: !Ref BatchJobLogGroup
+  FirelensLogGroupName:
+    Value: !Ref FirelensLogGroup

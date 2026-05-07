@@ -1,0 +1,28 @@
+# Base image for AWS Batch jobs with OpenTelemetry pre-installed.
+# Consumers extend this image with their own application code.
+#
+# Usage in consumer Dockerfile:
+#   FROM <ecr-or-s3-path>/batch-otel-base:latest
+#   COPY my_job.py /app/
+#   CMD ["python3", "/app/my_job.py"]
+
+FROM public.ecr.aws/docker/library/python:3.11-slim
+
+LABEL maintainer="SRE Team"
+LABEL description="Base image for AWS Batch jobs with OTel instrumentation"
+
+WORKDIR /app
+
+# Install OTel dependencies
+COPY src/batch_otel/requirements.txt /tmp/otel-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/otel-requirements.txt && rm /tmp/otel-requirements.txt
+
+# Install the batch_otel library
+COPY src/batch_otel/ /usr/local/lib/python3.11/site-packages/batch_otel/
+
+# Default environment variables — consumers override via Batch job definition
+ENV OTEL_EXPORTER_OTLP_ENDPOINT="https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318" \
+    OTEL_SERVICE_NAME="unknown-batch-job" \
+    OTEL_RESOURCE_ATTRIBUTES="environment=mon-sandbox"
+
+CMD ["python3", "-c", "print('No application specified. Extend this image.')"]

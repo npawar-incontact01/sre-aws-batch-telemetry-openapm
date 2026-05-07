@@ -29,8 +29,8 @@ CONTAINER_IMAGE="${CONTAINER_IMAGE:-public.ecr.aws/docker/library/python:3.11-sl
 TEMPLATES_BUCKET="${TEMPLATES_BUCKET:-sre-batch-telemetry-cfn-templates-723346695882}"
 CODE_S3_BUCKET="${CODE_S3_BUCKET:-sre-batch-telemetry-code-723346695882}"
 CODE_S3_PREFIX="${CODE_S3_PREFIX:-code}"
-OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://apm-na1.service.nicecxone-dev.com:4317}"
-OTEL_RESOURCE_ATTRS="${OTEL_RESOURCE_ATTRS:-environment=mon-sandbox,account.id=723346695882}"
+OTEL_ENDPOINT="${OTEL_ENDPOINT:-https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}"
+OTEL_RESOURCE_ATTRS="${OTEL_RESOURCE_ATTRS:-environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2}"
 TEAM="${TEAM:-sre}"
 COST_CENTER="${COST_CENTER:-0000}"
 
