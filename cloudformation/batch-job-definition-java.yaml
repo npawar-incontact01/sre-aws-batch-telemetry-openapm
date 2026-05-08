@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Batch Job Definition for Java Spring Boot telemetry POC.
+  Uses public Corretto 17 image + S3 JAR fetch (ECR push blocked by org policy).
+  Traces and metrics via OTLP/HTTP :4318; logs via Firelens (stdout → Loki).
+  Consistent with NICE ECS microservices pattern recommended by Brian.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-batch-telemetry-java
+  ContainerImage:
+    Type: String
+    Default: "public.ecr.aws/amazoncorretto/amazoncorretto:17"
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+  CodeS3Key:
+    Type: String
+    Default: "java/batch-telemetry.jar"
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Batch Execution Role
+  JobRoleArn:
+    Type: String
+    Description: ARN of the Batch Job Role
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
+  OtelEndpointHost:
+    Type: String
+    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+    Description: OpenAPM host used by Firelens to push logs to Loki
+  LokiPort:
+    Type: String
+    Default: "3100"
+    Description: Loki ingestion port on the OpenAPM endpoint
+  OpenapmProductName:
+    Type: String
+    Default: "sre-batch-telemetry"
+    Description: Product name tag for Grafana filtering
+  OtelResourceAttributes:
+    Type: String
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-batch-telemetry-java,region=us-west-2"
+  JobVcpu:
+    Type: String
+    Default: "0.5"
+    AllowedValues: ["0.25", "0.5", "1", "2", "4"]
+  JobMemory:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096, 8192]
+
+Resources:
+  # Application log group (for Firelens sidecar's own operational logs)
+  FirelensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      RetentionInDays: 7
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub "${ServiceName}-${EnvironmentName}-job"
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      Timeout:
+        AttemptDurationInSeconds: 600
+      RetryStrategy:
+        Attempts: 1
+      ContainerProperties:
+        Image: !Ref ContainerImage
+        Command:
+          - "/bin/sh"
+          - "-c"
+          - !Sub |
+              echo "Installing AWS CLI..." && \
+              yum install -y aws-cli -q 2>/dev/null || dnf install -y awscli2 -q 2>/dev/null && \
+              echo "Downloading JAR from S3..." && \
+              aws s3 cp s3://${CodeS3Bucket}/${CodeS3Key} /app.jar && \
+              echo "Starting Spring Boot batch job..." && \
+              java -jar /app.jar
+        ExecutionRoleArn: !Ref ExecutionRoleArn
+        JobRoleArn: !Ref JobRoleArn
+        FargatePlatformConfiguration:
+          PlatformVersion: LATEST
+        ResourceRequirements:
+          - Type: VCPU
+            Value: !Ref JobVcpu
+          - Type: MEMORY
+            Value: !Ref JobMemory
+        NetworkConfiguration:
+          AssignPublicIp: DISABLED
+        LogConfiguration:
+          # Firelens routes stdout JSON logs → Loki via PrivateLink
+          # (consistent with NICE ECS microservices pattern)
+          LogDriver: awsfirelens
+          Options:
+            Name: grafana-loki
+            Url: !Sub "https://${OtelEndpointHost}:${LokiPort}/loki/api/v1/push"
+            Labels: !Sub "{job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\"}"
+            RemoveKeys: "container_id,ecs_task_arn"
+            LabelKeys: "level,logger"
+            LineFormat: "json"
+            TenantID: ""
+            BatchWait: "1"
+            BatchSize: "1048576"
+            Tls: "On"
+            TlsVerify: "On"
+        Environment:
+          - Name: OTEL_SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+            Value: !Ref OtelEndpoint
+          - Name: OTEL_RESOURCE_ATTRIBUTES
+            Value: !Ref OtelResourceAttributes
+          - Name: OTEL_EXPORTER_OTLP_PROTOCOL
+            Value: http/protobuf
+          - Name: ENVIRONMENT
+            Value: !Ref EnvironmentName
+          - Name: OPENAPM_PRODUCT_NAME
+            Value: sre-batch-telemetry
+          - Name: AWS_REGION
+            Value: !Ref "AWS::Region"
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref "AWS::AccountId"
+
+Outputs:
+  JobDefinitionArn:
+    Value: !Ref BatchJobDefinition
+  FirelensLogGroupName:
+    Value: !Ref FirelensLogGroup

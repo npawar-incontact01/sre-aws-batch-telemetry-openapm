@@ -1,0 +1,47 @@
+# ──────────────────────────────────────────────────────────────────
+# Spring Boot Batch Telemetry — Micrometer + OTel Bridge
+# Traces  → OTLP/HTTP :4318 → Tempo
+# Metrics → OTLP/HTTP :4318 → Mimir
+# Logs    → stdout (JSON) → Firelens (Fluent Bit) → Loki
+#           consistent with NICE ECS microservices (Brian's recommendation)
+# ──────────────────────────────────────────────────────────────────
+
+spring:
+  application:
+    name: ${OTEL_SERVICE_NAME:sre-batch-telemetry-java}
+  main:
+    # Exit when CommandLineRunner finishes (batch job, not a server)
+    web-application-type: none
+
+# ── Tracing (Micrometer Tracing → OTel → OTLP/HTTP → Tempo) ──
+management:
+  tracing:
+    sampling:
+      probability: 1.0   # Sample 100% of spans for batch jobs
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}
+
+    # ── Metrics (Micrometer OTLP Registry → OTLP/HTTP → Mimir) ──
+    metrics:
+      export:
+        url: ${OTEL_EXPORTER_OTLP_ENDPOINT:https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}/v1/metrics
+        step: 10s
+        resource-attributes:
+          service.name: ${OTEL_SERVICE_NAME:sre-batch-telemetry-java}
+          environment: ${ENVIRONMENT:mon-sandbox}
+          openapm_product_name: ${OPENAPM_PRODUCT_NAME:sre-batch-telemetry}
+          service_name: ${OTEL_SERVICE_NAME:sre-batch-telemetry-java}
+          region: ${AWS_REGION:us-west-2}
+          account.id: ${AWS_ACCOUNT_ID:723346695882}
+
+# ── Logs: stdout (JSON via logstash-logback-encoder) → Firelens → Loki ──
+# No OTLP log export. Firelens is configured at the job definition level.
+# traceId / spanId are injected into JSON by Micrometer Tracing via MDC.
+
+logging:
+  level:
+    com.nice.sre.batch: INFO
+    io.micrometer: INFO
+    io.opentelemetry: INFO
