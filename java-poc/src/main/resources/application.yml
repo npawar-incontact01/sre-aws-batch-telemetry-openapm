@@ -21,7 +21,7 @@ management:
 
   otlp:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}/v1/traces
 
     # ── Metrics (Micrometer OTLP Registry → OTLP/HTTP → Mimir) ──
     metrics:

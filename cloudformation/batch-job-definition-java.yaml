@@ -1,9 +1,162 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   AWS Batch Job Definition for Java Spring Boot telemetry POC.
-  Uses public Corretto 17 image + S3 JAR fetch (ECR push blocked by org policy).
-  Traces and metrics via OTLP/HTTP :4318; logs via Firelens (stdout → Loki).
+  Multi-container (EcsProperties): app + Fluent Bit (Firelens) sidecar.
+  Traces + metrics via OTLP/HTTP; logs via Firelens → Loki.
   Consistent with NICE ECS microservices pattern recommended by Brian.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-batch-telemetry-java
+  ContainerImage:
+    Type: String
+    Default: "public.ecr.aws/amazoncorretto/amazoncorretto:17"
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+  CodeS3Key:
+    Type: String
+    Default: "java/batch-telemetry.jar"
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Batch Execution Role
+  JobRoleArn:
+    Type: String
+    Description: ARN of the Batch Job Role
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
+  OtelEndpointHost:
+    Type: String
+    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+    Description: OpenAPM host for Firelens Loki push
+  LokiPort:
+    Type: String
+    Default: "3100"
+    Description: Loki ingestion port
+  OpenapmProductName:
+    Type: String
+    Default: "sre-batch-telemetry"
+  OtelResourceAttributes:
+    Type: String
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-batch-telemetry-java,region=us-west-2"
+  AppVcpu:
+    Type: String
+    Default: "0.5"
+    AllowedValues: ["0.25", "0.5", "1", "2", "4"]
+  AppMemory:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "4096", "8192"]
+
+Resources:
+  # App logs → Firelens → Loki (not stored in CloudWatch)
+  FirelensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      RetentionInDays: 7
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub "${ServiceName}-${EnvironmentName}-job"
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      Timeout:
+        AttemptDurationSeconds: 600
+      RetryStrategy:
+        Attempts: 1
+      # EcsProperties enables multi-container (required for Firelens sidecar)
+      EcsProperties:
+        TaskProperties:
+          - ExecutionRoleArn: !Ref ExecutionRoleArn
+            TaskRoleArn: !Ref JobRoleArn
+            PlatformVersion: LATEST
+            NetworkConfiguration:
+              AssignPublicIp: ENABLED
+            Containers:
+              # ── App container ──────────────────────────────────────────
+              - Name: app
+                Image: !Ref ContainerImage
+                Essential: true
+                Command:
+                  - "/bin/sh"
+                  - "-c"
+                  - !Sub |
+                      curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
+                      cd /tmp && jar xf awscliv2.zip && \
+                      chmod -R +x /tmp/aws && \
+                      /tmp/aws/install -i /usr/local/aws -b /usr/local/bin && \
+                      /usr/local/bin/aws s3 cp s3://${CodeS3Bucket}/${CodeS3Key} /app.jar --region us-west-2 && \
+                      java -jar /app.jar
+                ResourceRequirements:
+                  - Type: VCPU
+                    Value: !Ref AppVcpu
+                  - Type: MEMORY
+                    Value: !Ref AppMemory
+                # Logs → Firelens sidecar → Loki
+                LogConfiguration:
+                  LogDriver: awsfirelens
+                  Options:
+                    Name: grafana-loki
+                    Url: !Sub "https://${OtelEndpointHost}:${LokiPort}/loki/api/v1/push"
+                    Labels: !Sub "{job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\"}"
+                    RemoveKeys: "container_id,ecs_task_arn"
+                    LabelKeys: "level,logger_name"
+                    LineFormat: "json"
+                    TenantID: ""
+                    BatchWait: "1"
+                    BatchSize: "1048576"
+                    Tls: "On"
+                    TlsVerify: "On"
+                Environment:
+                  - Name: OTEL_SERVICE_NAME
+                    Value: !Ref ServiceName
+                  - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    Value: !Ref OtelEndpoint
+                  - Name: OTEL_RESOURCE_ATTRIBUTES
+                    Value: !Ref OtelResourceAttributes
+                  - Name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    Value: http/protobuf
+                  - Name: ENVIRONMENT
+                    Value: !Ref EnvironmentName
+                  - Name: OPENAPM_PRODUCT_NAME
+                    Value: !Ref OpenapmProductName
+                  - Name: AWS_REGION
+                    Value: !Ref "AWS::Region"
+                  - Name: AWS_ACCOUNT_ID
+                    Value: !Ref "AWS::AccountId"
+
+              # ── Firelens log router sidecar ────────────────────────────
+              - Name: log_router
+                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
+                Essential: false
+                FirelensConfiguration:
+                  Type: fluentbit
+                ResourceRequirements:
+                  - Type: VCPU
+                    Value: "0.25"
+                  - Type: MEMORY
+                    Value: "128"
+                # Sidecar's own operational logs → CloudWatch
+                LogConfiguration:
+                  LogDriver: awslogs
+                  Options:
+                    awslogs-group: !Ref FirelensLogGroup
+                    awslogs-region: !Ref "AWS::Region"
+                    awslogs-stream-prefix: firelens
+
+Outputs:
+  JobDefinitionArn:
+    Value: !Ref BatchJobDefinition
+  FirelensLogGroupName:
+    Value: !Ref FirelensLogGroup
 
 Parameters:
   EnvironmentName:
