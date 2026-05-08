@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Spring Boot AWS Batch job demonstrating all 3 telemetry signals
@@ -54,6 +55,10 @@ public class BatchTelemetryApplication implements CommandLineRunner {
                 .tag("job.type", "telemetry-poc")
                 .register(meterRegistry);
 
+        // Gauge: use AtomicInteger so the registry holds a strong reference (avoids GC/NaN)
+        AtomicInteger jobStatus = new AtomicInteger(0);
+        meterRegistry.gauge("job.status", jobStatus);
+
         // Root span
         Span rootSpan = tracer.nextSpan().name("batch-job-execution").start();
         try (Tracer.SpanInScope ws = tracer.withSpan(rootSpan)) {
@@ -75,16 +80,15 @@ public class BatchTelemetryApplication implements CommandLineRunner {
 
             rootSpan.tag("job.items_processed", String.valueOf(count));
             rootSpan.tag("job.status", "success");
+            // jobStatus stays 0 (success)
 
-            meterRegistry.gauge("job.status", 0); // 0 = success
-
-            log.info("Batch job completed. Items processed: {}, Duration: {:.2f}s",
-                    count, elapsed / 1_000_000_000.0);
+            log.info("Batch job completed. Items processed: {}, Duration: {}s",
+                    count, String.format("%.2f", elapsed / 1_000_000_000.0));
 
         } catch (Exception e) {
             rootSpan.tag("job.status", "error");
             rootSpan.error(e);
-            meterRegistry.gauge("job.status", 1); // 1 = error
+            jobStatus.set(1); // 1 = error
             log.error("Batch job failed", e);
             throw new RuntimeException(e);
         } finally {
