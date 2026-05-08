@@ -55,7 +55,13 @@ Parameters:
     AllowedValues: [512, 1024, 2048, 4096, 8192]
 
 Resources:
-  # Application log group (for Firelens sidecar's own operational logs)
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}"
+      RetentionInDays: 14
+
+  # Firelens sidecar log group (reserved for future multi-container EcsProperties migration)
   FirelensLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -70,7 +76,7 @@ Resources:
       PlatformCapabilities:
         - FARGATE
       Timeout:
-        AttemptDurationInSeconds: 600
+        AttemptDurationSeconds: 600
       RetryStrategy:
         Attempts: 1
       ContainerProperties:
@@ -93,25 +99,18 @@ Resources:
           - Type: VCPU
             Value: !Ref JobVcpu
           - Type: MEMORY
-            Value: !Ref JobMemory
+            Value: !Sub "${JobMemory}"
         NetworkConfiguration:
           AssignPublicIp: DISABLED
         LogConfiguration:
-          # Firelens routes stdout JSON logs → Loki via PrivateLink
-          # (consistent with NICE ECS microservices pattern)
-          LogDriver: awsfirelens
+          # TODO: migrate to awsfirelens via EcsProperties (multi-container) once
+          # single-container Fargate supports Firelens log router.
+          # Logs currently go to CloudWatch; traces+metrics go via OTLP/HTTP.
+          LogDriver: awslogs
           Options:
-            Name: grafana-loki
-            Url: !Sub "https://${OtelEndpointHost}:${LokiPort}/loki/api/v1/push"
-            Labels: !Sub "{job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\"}"
-            RemoveKeys: "container_id,ecs_task_arn"
-            LabelKeys: "level,logger"
-            LineFormat: "json"
-            TenantID: ""
-            BatchWait: "1"
-            BatchSize: "1048576"
-            Tls: "On"
-            TlsVerify: "On"
+            awslogs-group: !Ref LogGroup
+            awslogs-region: !Ref "AWS::Region"
+            awslogs-stream-prefix: batch
         Environment:
           - Name: OTEL_SERVICE_NAME
             Value: !Ref ServiceName
@@ -133,5 +132,7 @@ Resources:
 Outputs:
   JobDefinitionArn:
     Value: !Ref BatchJobDefinition
+  LogGroupName:
+    Value: !Ref LogGroup
   FirelensLogGroupName:
     Value: !Ref FirelensLogGroup
