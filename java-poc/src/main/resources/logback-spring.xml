@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback config — single CONSOLE appender writing JSON to stdout.
+
+  Logs flow: SLF4J → Logback → stdout (JSON) → Firelens (Fluent Bit) → Loki
+  Consistent with other NICE ECS microservices using Firelens for log routing.
+
+  trace_id and span_id are automatically injected into JSON fields by
+  Micrometer Tracing via MDC, enabling trace-log correlation in Grafana.
+-->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- Include Micrometer trace/span IDs for log-trace correlation -->
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
+            <!-- Suppress default Logstash version field to reduce log size -->
+            <fieldNames>
+                <version>[ignore]</version>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>
