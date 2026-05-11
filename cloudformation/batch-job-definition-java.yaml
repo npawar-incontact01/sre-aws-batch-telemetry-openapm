@@ -1,14 +1,15 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   AWS Batch Job Definition for Java Spring Boot telemetry POC.
-  Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
+  Single container: app only — no Firelens sidecar.
   All 3 signals via OTLP/HTTP to apm-na1:4318 (same VPC endpoint):
     Traces  -> /v1/traces  -> Tempo
     Metrics -> /v1/metrics -> Mimir
-    Logs    -> /v1/logs    -> Loki (via Firelens opentelemetry plugin)
-  NOTE: Uses aws-for-fluent-bit:3.3.0 (Fluent Bit 5.0.3) — log support in
-  opentelemetry plugin requires Fluent Bit 2.0+. The :stable tag (1.9.10)
-  only handles metrics and will NOT work for logs.
+    Logs    -> /v1/logs    -> Loki (OTel logback appender, direct OTLP from Java)
+  NOTE: Firelens (aws-for-fluent-bit) cannot set OTLP resource attributes
+  (service.name) via ECS inline options — Loki always shows unknown_service.
+  OTel logback appender reads OTEL_SERVICE_NAME + OTEL_RESOURCE_ATTRIBUTES env
+  vars and sends correct resource attributes directly.
 
 Parameters:
   EnvironmentName:
@@ -42,20 +43,16 @@ Parameters:
   OpenapmProductName:
     Type: String
     Default: "sre-batch-telemetry"
-  OtelEndpointHost:
-    Type: String
-    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
-    Description: "OTLP endpoint hostname for Firelens opentelemetry plugin (Host option)"
   AppVcpu:
     Type: String
     Default: "0.75"
     AllowedValues: ["0.25", "0.5", "0.75", "1", "2", "4"]
-    Description: vCPU for the app container (log_router always gets 0.25)
+    Description: vCPU for the app container
   AppMemory:
     Type: String
     Default: "1920"
     AllowedValues: ["512", "896", "1024", "1920", "2048", "4096", "8192"]
-    Description: Memory MiB for the app container (log_router always gets 128)
+    Description: Memory MiB for the app container
   Team:
     Type: String
     Default: sre
@@ -64,11 +61,11 @@ Parameters:
     Default: "0000"
 
 Resources:
-  # Firelens sidecar operational logs (NOT the app logs — those go to Loki via OTLP)
-  FirelensLogGroup:
+  # App stdout (JSON via logstash-logback-encoder) — visible in CloudWatch
+  AppLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/app"
       RetentionInDays: 7
 
   BatchJobDefinition:
@@ -82,7 +79,7 @@ Resources:
         AttemptDurationSeconds: 600
       RetryStrategy:
         Attempts: 1
-      # EcsProperties is required for multi-container (Firelens sidecar pattern)
+      # EcsProperties used for single container (required for Fargate Batch)
       EcsProperties:
         TaskProperties:
           - ExecutionRoleArn: !Ref ExecutionRoleArn
@@ -111,22 +108,16 @@ Resources:
                     Value: !Ref AppVcpu
                   - Type: MEMORY
                     Value: !Ref AppMemory
-                # App stdout -> Firelens sidecar -> opentelemetry plugin -> OTLP /v1/logs -> Loki
-                # Requires aws-for-fluent-bit:3.x (Fluent Bit 2.0+ has log support in opentelemetry plugin)
+                # App stdout (JSON) -> CloudWatch for visibility
+                # Logs also go via OTel logback appender -> OTLP/HTTP /v1/logs -> Loki
+                # OTEL_SERVICE_NAME + OTEL_RESOURCE_ATTRIBUTES set below are used as
+                # resource attributes by the OTel SDK appender (service_name label in Loki).
                 LogConfiguration:
-                  LogDriver: awsfirelens
+                  LogDriver: awslogs
                   Options:
-                    Name: opentelemetry
-                    match: "*"
-                    Host: !Ref OtelEndpointHost
-                    Port: "4318"
-                    logs_uri: /v1/logs
-                    tls: "on"
-                    Retry_Limit: "3"
-                    # Sets service_name resource attribute on OTLP logs → maps to Loki label.
-                    # Using service_name (underscore) to match the collector's attributes processor config.
-                    # service.name (dot) is the OTel standard but the collector uses service_name directly.
-                    add_label: !Sub "service_name ${ServiceName}"
+                    awslogs-group: !Ref AppLogGroup
+                    awslogs-region: !Ref "AWS::Region"
+                    awslogs-stream-prefix: app
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
@@ -146,28 +137,6 @@ Resources:
                     Value: !Ref "AWS::AccountId"
 
 
-              # -- Firelens log router sidecar --
-              - Name: log_router
-                # aws-for-fluent-bit:3.3.0 = Fluent Bit 5.0.3
-                # The :stable tag (2.34.x) ships Fluent Bit 1.9.10 which does NOT support
-                # logs in the opentelemetry plugin (metrics only). Use 3.x image.
-                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:3.3.0"
-                Essential: false
-                FirelensConfiguration:
-                  Type: fluentbit
-                ResourceRequirements:
-                  - Type: VCPU
-                    Value: "0.25"
-                  - Type: MEMORY
-                    Value: "128"
-                # Sidecar operational logs -> CloudWatch for debugging
-                LogConfiguration:
-                  LogDriver: awslogs
-                  Options:
-                    awslogs-group: !Ref FirelensLogGroup
-                    awslogs-region: !Ref "AWS::Region"
-                    awslogs-stream-prefix: firelens
-
       Tags:
         Environment: !Ref EnvironmentName
         Service: !Ref ServiceName
@@ -178,6 +147,6 @@ Outputs:
   JobDefinitionArn:
     Value: !Ref BatchJobDefinition
     Description: ARN of the Batch job definition
-  FirelensLogGroupName:
-    Value: !Ref FirelensLogGroup
-    Description: CloudWatch log group for Firelens sidecar operational logs
+  AppLogGroupName:
+    Value: !Ref AppLogGroup
+    Description: CloudWatch log group for app stdout (JSON)
