@@ -126,6 +126,12 @@ Resources:
                     tls: "on"
                     tls.verify: "on"
                     Retry_Limit: "3"
+                    # Resource attributes required for Loki stream label mapping:
+                    # OTel collector (nsso) uses otlphttp/loki exporter -> Loki /otlp endpoint
+                    # Loki OTLP ingestion maps resource attributes to stream labels
+                    add_label.openapm_product_name: !Ref OpenapmProductName
+                    add_label.service_name: !Ref ServiceName
+                    add_label.region: !Sub "${AWS::Region}"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName

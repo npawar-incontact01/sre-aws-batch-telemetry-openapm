@@ -97,6 +97,12 @@ public class BatchTelemetryApplication implements CommandLineRunner {
 
         // Flush telemetry before exit
         flushTelemetry();
+
+        // Wait for Firelens (Fluent Bit) to flush buffered logs via OTLP to Loki.
+        // Fluent Bit's default flush interval is 5s; 15s gives 3 flush cycles before SIGTERM.
+        log.info("Waiting 15s for Firelens to flush logs...");
+        sleep(15000);
+        log.info("Firelens flush wait complete. Exiting.");
     }
 
     private int fetchData() {
