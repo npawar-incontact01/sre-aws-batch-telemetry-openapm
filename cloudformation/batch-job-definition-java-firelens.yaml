@@ -175,9 +175,9 @@ Resources:
                 LogConfiguration:
                   LogDriver: awslogs
                   Options:
-                    # Reuse the existing /app log group (already exists, owned by sre-batch-java-dev-jobdef).
-                    # EarlyValidation hook rejects any non-existent log group reference.
-                    awslogs-group: !Sub "/aws/batch/${ServiceName}/app"
+                    # Hardcoded name — EarlyValidation does NOT evaluate !Sub, so a dynamic
+                    # reference would cause "resource not found" even when the group exists.
+                    awslogs-group: "/aws/batch/sre-batch-telemetry-java/app"
                     awslogs-region: !Ref "AWS::Region"
                     awslogs-stream-prefix: firelens-sidecar
 
