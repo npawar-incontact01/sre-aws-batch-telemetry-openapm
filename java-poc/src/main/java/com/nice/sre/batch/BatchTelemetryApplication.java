@@ -5,6 +5,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -30,9 +32,13 @@ public class BatchTelemetryApplication implements CommandLineRunner {
     private final MeterRegistry meterRegistry;
     private final Tracer tracer;
 
-    public BatchTelemetryApplication(MeterRegistry meterRegistry, Tracer tracer) {
+    public BatchTelemetryApplication(MeterRegistry meterRegistry, Tracer tracer, OpenTelemetry openTelemetry) {
         this.meterRegistry = meterRegistry;
         this.tracer = tracer;
+        // Connect logback OTel appender to the Spring-managed SDK instance.
+        // Without this, the appender uses GlobalOpenTelemetry (no-op) and
+        // logs arrive in Loki with service_name="unknown_service".
+        OpenTelemetryAppender.install(openTelemetry);
     }
 
     public static void main(String[] args) {
