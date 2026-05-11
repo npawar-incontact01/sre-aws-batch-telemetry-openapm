@@ -100,19 +100,20 @@ Resources:
                     Value: !Ref AppVcpu
                   - Type: MEMORY
                     Value: !Ref AppMemory
-                # Logs → Firelens sidecar → Loki (native Fluent Bit loki plugin, built into aws-for-fluent-bit)
+                # Logs → Firelens sidecar → Loki via http output plugin (same pattern as fluent-bit.conf)
+                # Uses port 4318 (same HTTPS gateway as OTLP traces/metrics) not port 3100
                 LogConfiguration:
                   LogDriver: awsfirelens
                   Options:
-                    Name: loki
+                    Name: http
                     Host: !Ref OtelEndpointHost
-                    Port: !Ref LokiPort
-                    labels: !Sub "job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\""
-                    remove_keys: "container_id,ecs_task_arn"
-                    label_keys: "$level,$logger_name"
-                    line_format: json
+                    Port: "4318"
+                    URI: /loki/api/v1/push
+                    Format: json
                     tls: "on"
                     tls.verify: "on"
+                    Retry_Limit: "3"
+                    Header: "Content-Type application/json"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
