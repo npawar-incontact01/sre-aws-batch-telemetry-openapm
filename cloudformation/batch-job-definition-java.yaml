@@ -107,10 +107,10 @@ Resources:
                     Name: loki
                     Host: !Ref OtelEndpointHost
                     Port: !Ref LokiPort
-                    Labels: !Sub "job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\""
-                    RemoveKeys: "container_id,ecs_task_arn"
-                    LabelKeys: "level,logger_name"
-                    LineFormat: json
+                    labels: !Sub "job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${AWS::Region}\""
+                    remove_keys: "container_id,ecs_task_arn"
+                    label_keys: "$level,$logger_name"
+                    line_format: json
                     tls: "on"
                     tls.verify: "on"
                 Environment:
