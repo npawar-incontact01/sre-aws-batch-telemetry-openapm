@@ -124,6 +124,9 @@ Resources:
                     tls: "on"
                     tls.verify: "on"
                     Retry_Limit: "3"
+                    # Loki OTLP ingestion maps service.name resource attribute -> service_name stream label
+                    # Fluent Bit add_label syntax: "key value" as single string value
+                    add_label: !Sub "service.name ${ServiceName}"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
