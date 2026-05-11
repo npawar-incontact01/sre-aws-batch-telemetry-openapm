@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  BRIAN'S APPROACH: Java Spring Boot Batch job with Firelens log routing.
+  Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
+  Traces  -> Micrometer Tracing -> OTLP/HTTP :4318/v1/traces  -> Tempo  [WORKING]
+  Metrics -> Micrometer OTLP   -> OTLP/HTTP :4318/v1/metrics -> Mimir  [WORKING]
+  Logs    -> stdout -> Firelens (aws-for-fluent-bit:3.3.0) -> OTLP/HTTP :4318/v1/logs -> Loki
+             [REACHES LOKI but service_name=unknown_service — HARD BLOCKER explained below]
+
+  ROOT CAUSE of wrong label:
+    Firelens inline ECS options can set Loki STREAM labels (add_label) but
+    cannot set OTLP resource attributes (service.name). The OpenAPM OTel
+    Collector maps service.name -> service_name Loki label. Since Firelens
+    sends no service.name resource attribute, the collector falls back to
+    service_name="unknown_service".
+    This is an architectural limitation of Firelens — it cannot be fixed
+    via configuration alone without modifying the collector pipeline.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-batch-telemetry-java
+  ContainerImage:
+    Type: String
+    Default: "public.ecr.aws/amazoncorretto/amazoncorretto:17"
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+  CodeS3Key:
+    Type: String
+    Default: "java/batch-telemetry.jar"
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Batch Execution Role (from iam-roles stack)
+  JobRoleArn:
+    Type: String
+    Description: ARN of the Batch Job Role (from iam-roles stack)
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
+  OtelResourceAttributes:
+    Type: String
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-batch-telemetry-java,region=us-west-2"
+  OpenapmProductName:
+    Type: String
+    Default: "sre-batch-telemetry"
+  OtelEndpointHost:
+    Type: String
+    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+  AppVcpu:
+    Type: String
+    Default: "1"
+    AllowedValues: ["0.5", "1", "2", "4"]
+  AppMemory:
+    Type: String
+    Default: "2048"
+    AllowedValues: ["1024", "2048", "4096", "8192"]
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  # App stdout log group (visible in CloudWatch — same JSON as Loki would get)
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/app"
+      RetentionInDays: 7
+
+  # Firelens sidecar operational logs (for debugging Fluent Bit itself)
+  FirelensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      RetentionInDays: 7
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub "${ServiceName}-${EnvironmentName}-firelens-job"
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      Timeout:
+        AttemptDurationSeconds: 600
+      RetryStrategy:
+        Attempts: 1
+      # EcsProperties required for multi-container Batch (Firelens sidecar)
+      # Multi-container Batch support added Feb 2024:
+      # https://aws.amazon.com/about-aws/whats-new/2024/02/aws-batch-multi-container-jobs/
+      # Firelens support for Batch added Apr 2025:
+      # https://aws.amazon.com/about-aws/whats-new/2025/04/aws-batch-amazon-elastic-container-service-exec-firelens-log-router/
+      EcsProperties:
+        TaskProperties:
+          - ExecutionRoleArn: !Ref ExecutionRoleArn
+            TaskRoleArn: !Ref JobRoleArn
+            PlatformVersion: LATEST
+            NetworkConfiguration:
+              AssignPublicIp: ENABLED
+            Containers:
+
+              # ── App container ──────────────────────────────────────────────
+              # Traces (Micrometer) and metrics (Micrometer OTLP) go direct
+              # to OTLP endpoint. Logs go to stdout → Firelens sidecar.
+              - Name: app
+                Image: !Ref ContainerImage
+                Essential: true
+                Command:
+                  - "/bin/sh"
+                  - "-c"
+                  - !Sub |
+                      curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
+                      cd /tmp && jar xf awscliv2.zip && \
+                      chmod -R +x /tmp/aws && \
+                      /tmp/aws/install -i /usr/local/aws -b /usr/local/bin && \
+                      /usr/local/bin/aws s3 cp s3://${CodeS3Bucket}/${CodeS3Key} /app.jar --region us-west-2 && \
+                      java -jar /app.jar
+                ResourceRequirements:
+                  - Type: VCPU
+                    Value: !Ref AppVcpu
+                  - Type: MEMORY
+                    Value: !Ref AppMemory
+                # stdout -> Firelens -> opentelemetry plugin -> OTLP /v1/logs -> Loki
+                # KNOWN LIMITATION: logs reach Loki but service_name="unknown_service"
+                # because Firelens cannot set OTLP resource attributes (service.name).
+                # add_label sets a Loki stream label, not an OTLP resource attribute.
+                # The OpenAPM collector maps service.name resource attr -> service_name Loki label.
+                # Without service.name in OTLP resource, the collector has no value to map.
+                LogConfiguration:
+                  LogDriver: awsfirelens
+                  Options:
+                    Name: opentelemetry
+                    match: "*"
+                    Host: !Ref OtelEndpointHost
+                    Port: "4318"
+                    logs_uri: /v1/logs
+                    tls: "on"
+                    Retry_Limit: "3"
+                    # ATTEMPTED FIX (does NOT work):
+                    # add_label sets a Loki stream label on the HTTP request,
+                    # not an OTLP resourceLogs.resource.attributes entry.
+                    # The collector ignores stream labels when building service_name.
+                    add_label: !Sub "service_name ${ServiceName}"
+                Environment:
+                  - Name: OTEL_SERVICE_NAME
+                    Value: !Ref ServiceName
+                  - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+                    Value: !Ref OtelEndpoint
+                  - Name: OTEL_RESOURCE_ATTRIBUTES
+                    Value: !Ref OtelResourceAttributes
+                  - Name: OTEL_EXPORTER_OTLP_PROTOCOL
+                    Value: http/protobuf
+                  - Name: ENVIRONMENT
+                    Value: !Ref EnvironmentName
+                  - Name: OPENAPM_PRODUCT_NAME
+                    Value: !Ref OpenapmProductName
+                  - Name: AWS_REGION
+                    Value: !Ref "AWS::Region"
+                  - Name: AWS_ACCOUNT_ID
+                    Value: !Ref "AWS::AccountId"
+
+              # ── Firelens log router sidecar ────────────────────────────────
+              # aws-for-fluent-bit:3.3.0 = Fluent Bit 5.0.3
+              # IMPORTANT: DO NOT use :stable tag — it ships Fluent Bit 1.9.10
+              # which has NO log support in the opentelemetry plugin (metrics only).
+              # Firelens support for Batch:
+              # https://aws.amazon.com/about-aws/whats-new/2025/04/aws-batch-amazon-elastic-container-service-exec-firelens-log-router/
+              - Name: log_router
+                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:3.3.0"
+                Essential: false
+                FirelensConfiguration:
+                  Type: fluentbit
+                ResourceRequirements:
+                  - Type: VCPU
+                    Value: "0.25"
+                  - Type: MEMORY
+                    Value: "128"
+                LogConfiguration:
+                  LogDriver: awslogs
+                  Options:
+                    awslogs-group: !Ref FirelensLogGroup
+                    awslogs-region: !Ref "AWS::Region"
+                    awslogs-stream-prefix: firelens
+
+      Tags:
+        Environment: !Ref EnvironmentName
+        Service: !Ref ServiceName
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+        Approach: "Brian-Firelens"
+
+Outputs:
+  JobDefinitionArn:
+    Value: !Ref BatchJobDefinition
+    Description: ARN of the Firelens-based Batch job definition
+  FirelensLogGroup:
+    Value: !Ref FirelensLogGroup
+    Description: CloudWatch log group for Firelens sidecar operational logs
+  AppLogGroup:
+    Value: !Ref AppLogGroup
+    Description: CloudWatch log group for app stdout (JSON)
+  LokiQuery:
+    Value: '{service_name="unknown_service"}'
+    Description: >
+      Grafana Loki query to find these logs. service_name is unknown_service
+      because Firelens cannot set OTLP resource attributes. See README for details.

@@ -1,11 +1,29 @@
-# sre-aws-batch-telemetry — Java POC
+# sre-aws-batch-telemetry — Brian's Approach: Java + Firelens
 
-> **Branch:** `poc/java-aws-batch`
-> See also: [`poc/python-aws-batch`](../../tree/poc/python-aws-batch) for the Python version.
+> **Branch:** `poc/java-firelens-brian-approach`
+> This branch implements Architect Brian's recommended approach: **Micrometer for traces/metrics + Firelens sidecar for log routing**, consistent with how regular ECS microservices work at NICE.
+>
+> | Signal | Status | Notes |
+> |--------|--------|-------|
+> | Traces | ✅ Working | Micrometer Tracing → Tempo |
+> | Metrics | ✅ Working | Micrometer OTLP Registry → Mimir |
+> | Logs | ⚠️ Reaches Loki | `service_name=unknown_service` — see [Evidence Doc](docs/FIRELENS-EVIDENCE.md) |
+>
+> See also: [`poc/java-aws-batch`](../../tree/poc/java-aws-batch) (working fix), [`poc/python-aws-batch`](../../tree/poc/python-aws-batch)
 
-## POC: Java Spring Boot AWS Batch Telemetry → OpenAPM
+## Brian's Recommended Architecture
 
-This project demonstrates how to instrument a **Java Spring Boot AWS Batch job** to send all three OpenTelemetry signals — **traces, metrics, and logs** — to **OpenAPM** (Grafana Tempo / Mimir / Loki) via OTLP/HTTP.
+```
+AWS Batch Fargate Task (Multi-container — 2025 Firelens support)
+├── App container (amazoncorretto:17)
+│     ├── Micrometer Tracing → OTLP/HTTP :4318/v1/traces  → Tempo  ✅
+│     ├── Micrometer OTLP    → OTLP/HTTP :4318/v1/metrics → Mimir  ✅
+│     └── stdout (JSON logs) → Firelens sidecar
+│
+└── log_router sidecar (aws-for-fluent-bit:3.3.0)
+      └── opentelemetry plugin → OTLP/HTTP :4318/v1/logs → Loki  ⚠️
+            Logs REACH Loki but appear under service_name="unknown_service"
+```
 
 The solution uses **Micrometer Tracing + OTel bridge** for traces/metrics and a manually configured `SdkLoggerProvider` for logs — no Firelens, no ECR push required.
 
