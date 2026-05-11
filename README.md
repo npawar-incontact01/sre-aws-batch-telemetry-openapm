@@ -1,10 +1,166 @@
-# sre-aws-batch-telemetry-openapm
+# sre-aws-batch-telemetry — Java POC
 
-## POC: AWS Batch Telemetry to OpenAPM
+> **Branch:** `poc/java-aws-batch`
+> See also: [`poc/python-aws-batch`](../../tree/poc/python-aws-batch) for the Python version.
 
-This project demonstrates a **generic, reusable solution** for sending **traces, metrics, and logs** from AWS Batch jobs to OpenAPM (Grafana Tempo / Mimir / Loki) via OpenTelemetry OTLP/HTTP protocol.
+## POC: Java Spring Boot AWS Batch Telemetry → OpenAPM
 
-The goal is to enable any existing or new AWS Batch application to ingest telemetry data into OpenAPM with minimal code changes.
+This project demonstrates how to instrument a **Java Spring Boot AWS Batch job** to send all three OpenTelemetry signals — **traces, metrics, and logs** — to **OpenAPM** (Grafana Tempo / Mimir / Loki) via OTLP/HTTP.
+
+The solution uses **Micrometer Tracing + OTel bridge** for traces/metrics and a manually configured `SdkLoggerProvider` for logs — no Firelens, no ECR push required.
+
+---
+
+## Architecture
+
+```
+AWS Batch Fargate Task
+└── Java container (amazoncorretto:17)
+    ├── Downloads batch-telemetry.jar from S3 at startup
+    │
+    ├── Micrometer Tracing (OTel bridge)
+    │     → OTLPSpanExporter  → /v1/traces  → Tempo
+    │
+    ├── Micrometer OTLP Registry
+    │     → OTLPMetricExporter → /v1/metrics → Mimir
+    │
+    └── Logback + OTel Appender (custom SdkLoggerProvider)
+          → OtlpHttpLogRecordExporter → /v1/logs → Loki
+                                          │
+                                VPC Endpoint (PrivateLink)
+```
+
+| Signal  | Library | Exporter | Backend |
+|---------|---------|----------|---------|
+| Traces  | `micrometer-tracing-bridge-otel` | `opentelemetry-exporter-otlp` | Tempo |
+| Metrics | `micrometer-registry-otlp` | OTLP push registry | Mimir |
+| Logs    | `opentelemetry-logback-appender-1.0` | `OtlpHttpLogRecordExporter` | Loki |
+
+---
+
+## Repository Structure (Java POC)
+
+```
+java-poc/
+  pom.xml                            # Spring Boot 3.3.13, Java 17
+  src/main/java/com/nice/sre/batch/
+    BatchTelemetryApplication.java   # Main job: traces + metrics + log wiring
+  src/main/resources/
+    application.yml                  # Micrometer config (traces + metrics)
+    logback-spring.xml               # CONSOLE + OpenTelemetryAppender
+cloudformation/
+  batch-job-definition-java.yaml     # Job definition (1 vCPU / 2048 MB, awslogs)
+  iam-roles.yaml
+  batch-compute-environment.yaml
+  batch-job-queue.yaml
+scripts/
+  build-and-deploy-java.sh
+docs/
+  JAVA-POC-SUMMARY.md               # Full POC story
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Java 17, Maven 3.x
+- AWS CLI configured with `mon-sandbox` profile (MFA-enabled, use CloudShell for deploy)
+- Access to `s3://sre-batch-telemetry-code-723346695882`
+
+### 1. Build the JAR
+
+```bash
+cd java-poc
+mvn clean package -DskipTests
+# Output: target/batch-telemetry.jar (~23 MB)
+```
+
+### 2. Upload to S3 and submit (via CloudShell)
+
+```bash
+# In CloudShell: Actions → Upload file → batch-telemetry.jar
+aws s3 cp ~/batch-telemetry.jar \
+  s3://sre-batch-telemetry-code-723346695882/java/batch-telemetry.jar \
+  --region us-west-2
+
+aws batch submit-job \
+  --job-name my-java-batch-job \
+  --job-queue sre-aws-batch-telemetry-dev-queue \
+  --job-definition sre-batch-telemetry-java-dev-job \
+  --region us-west-2
+```
+
+### 3. View telemetry in Grafana
+
+- **Traces** → Tempo → `service.name = sre-batch-telemetry-java`
+- **Metrics** → Mimir → `{service_name="sre-batch-telemetry-java"}`
+- **Logs** → Loki → `{service_name="sre-batch-telemetry-java"}`
+
+---
+
+## Key Dependencies (pom.xml)
+
+```xml
+<!-- Traces: Micrometer → OTel bridge → OTLP/HTTP → Tempo -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-tracing-bridge-otel</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.opentelemetry</groupId>
+    <artifactId>opentelemetry-exporter-otlp</artifactId>
+</dependency>
+
+<!-- Metrics: OTLP push registry → Mimir -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-otlp</artifactId>
+</dependency>
+
+<!-- Logs: logback OTel appender → /v1/logs → Loki -->
+<dependency>
+    <groupId>io.opentelemetry.instrumentation</groupId>
+    <artifactId>opentelemetry-logback-appender-1.0</artifactId>
+    <version>2.4.0-alpha</version>
+</dependency>
+```
+
+---
+
+## Environment Variables (set in job definition)
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `OTEL_SERVICE_NAME` | `sre-batch-telemetry-java` | Service name across all signals |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318` | OpenAPM endpoint |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Forces HTTP over gRPC |
+| `OTEL_RESOURCE_ATTRIBUTES` | `environment=mon-sandbox,account.id=...,service_name=...,region=us-west-2` | Loki labels |
+
+---
+
+## Infrastructure
+
+| Resource | Value |
+|---|---|
+| AWS Account | `723346695882` (mon-sandbox) |
+| Region | `us-west-2` |
+| Job Queue | `sre-aws-batch-telemetry-dev-queue` |
+| Job Definition | `sre-batch-telemetry-java-dev-job` |
+| CF Stack | `sre-batch-java-dev-jobdef` |
+| S3 JAR path | `s3://sre-batch-telemetry-code-723346695882/java/batch-telemetry.jar` |
+| CloudWatch logs | `/aws/batch/sre-batch-telemetry-java/app` |
+| Execution Role | `sre-aws-batch-telemetry-dev-execution-role` |
+| Job Role | `sre-aws-batch-telemetry-dev-job-role` |
+
+---
+
+## Related
+
+- [Python POC branch](../../tree/poc/python-aws-batch) — Python OTel SDK version
+- [Docs: Java POC Summary](docs/JAVA-POC-SUMMARY.md)
+
 
 ---
 
