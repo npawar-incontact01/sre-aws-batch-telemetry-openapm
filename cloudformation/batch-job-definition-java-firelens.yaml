@@ -67,23 +67,9 @@ Parameters:
 
 Resources:
 
-  # App stdout log group (visible in CloudWatch — same JSON as Loki would get)
-  AppLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LogGroupName: !Sub "/aws/batch/${ServiceName}/app"
-      RetentionInDays: 7
-
-  # Firelens sidecar operational logs (for debugging Fluent Bit itself)
-  FirelensLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
-      RetentionInDays: 7
+  # NOTE: Log groups are NOT managed by this stack to avoid EarlyValidation conflicts.
+  # /aws/batch/${ServiceName}/app already exists (owned by sre-batch-java-dev-jobdef stack).
+  # /aws/batch/${ServiceName}/firelens is auto-created by awslogs-create-group on first run.
 
   BatchJobDefinition:
     Type: AWS::Batch::JobDefinition
@@ -189,9 +175,10 @@ Resources:
                 LogConfiguration:
                   LogDriver: awslogs
                   Options:
-                    awslogs-group: !Ref FirelensLogGroup
+                    awslogs-group: !Sub "/aws/batch/${ServiceName}/firelens"
                     awslogs-region: !Ref "AWS::Region"
                     awslogs-stream-prefix: firelens
+                    awslogs-create-group: "true"
 
       Tags:
         Environment: !Ref EnvironmentName
