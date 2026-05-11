@@ -122,7 +122,7 @@ Resources:
                     Name: opentelemetry
                     Host: !Ref OtelEndpointHost
                     Port: "4318"
-                    logs_uri: /v1/logs
+                    uri: /v1/logs
                     tls: "on"
                     tls.verify: "on"
                     Retry_Limit: "3"
