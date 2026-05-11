@@ -113,10 +113,12 @@ Resources:
                       /usr/local/bin/aws s3 cp s3://${CodeS3Bucket}/${CodeS3Key} /app.jar --region us-west-2 && \
                       java -jar /app.jar
                 ResourceRequirements:
+                  # 0.75 vCPU + 0.25 vCPU (sidecar) = 1.0 vCPU total (valid Fargate task size)
+                  # 1920 MiB + 128 MiB (sidecar) = 2048 MiB total (valid for 1 vCPU)
                   - Type: VCPU
-                    Value: !Ref AppVcpu
+                    Value: "0.75"
                   - Type: MEMORY
-                    Value: !Ref AppMemory
+                    Value: "1920"
                 # stdout -> Firelens -> opentelemetry plugin -> OTLP /v1/logs -> Loki
                 # KNOWN LIMITATION: logs reach Loki but service_name="unknown_service"
                 # because Firelens cannot set OTLP resource attributes (service.name).
