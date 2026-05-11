@@ -45,12 +45,12 @@ Parameters:
     Default: "sre-batch-telemetry"
   AppVcpu:
     Type: String
-    Default: "0.75"
+    Default: "1"
     AllowedValues: ["0.25", "0.5", "0.75", "1", "2", "4"]
     Description: vCPU for the app container
   AppMemory:
     Type: String
-    Default: "1920"
+    Default: "2048"
     AllowedValues: ["512", "896", "1024", "1920", "2048", "4096", "8192"]
     Description: Memory MiB for the app container
   Team:
