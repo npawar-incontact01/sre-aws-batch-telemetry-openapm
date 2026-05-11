@@ -72,11 +72,17 @@
             <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
 
-        <!-- Logs: JSON to stdout (CloudWatch) + OTLP export to OpenAPM Loki -->
+        <!-- Logs: stdout JSON (CloudWatch) + OTel bridge → OTLP/HTTP /v1/logs → Loki -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
             <version>8.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-logback-appender-1.0</artifactId>
+            <version>2.3.0-alpha</version>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
 

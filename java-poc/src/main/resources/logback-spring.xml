@@ -10,6 +10,7 @@
 -->
 <configuration>
 
+    <!-- stdout JSON → CloudWatch (and for local dev visibility) -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
             <!-- Include Micrometer trace/span IDs for log-trace correlation -->
@@ -22,8 +23,16 @@
         </encoder>
     </appender>
 
+    <!-- OTel bridge → OTLP/HTTP /v1/logs → OpenAPM Loki
+         Auto-wires into GlobalOpenTelemetry configured by Spring Boot actuator -->
+    <appender name="OTEL" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <captureExperimentalAttributes>true</captureExperimentalAttributes>
+        <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+    </appender>
+
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="OTEL"/>
     </root>
 
 </configuration>

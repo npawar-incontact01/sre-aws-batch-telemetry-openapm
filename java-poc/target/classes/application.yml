@@ -36,6 +36,11 @@ management:
           region: ${AWS_REGION:us-west-2}
           account.id: ${AWS_ACCOUNT_ID:723346695882}
 
+    # ── Logs (OTel Logback appender → OTLP/HTTP → Loki) ──
+    logging:
+      export:
+        endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318}/v1/logs
+
 # ── Logs: stdout (JSON via logstash-logback-encoder) → Firelens → Loki ──
 # No OTLP log export. Firelens is configured at the job definition level.
 # traceId / spanId are injected into JSON by Micrometer Tracing via MDC.
