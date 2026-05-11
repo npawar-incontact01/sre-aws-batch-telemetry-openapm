@@ -113,11 +113,17 @@ Resources:
                   - Type: MEMORY
                     Value: !Ref AppMemory
                 # App stdout -> Firelens sidecar -> OTLP /v1/logs -> Loki
-                # Output config is in the custom Fluent Bit config file in S3
-                # (AWS Batch EcsProperties does not translate awsfirelens options
-                #  into Fluent Bit output config - custom S3 config is required)
+                # Same VPC endpoint (port 4318) used for traces and metrics
                 LogConfiguration:
                   LogDriver: awsfirelens
+                  Options:
+                    Name: opentelemetry
+                    Host: !Ref OtelEndpointHost
+                    Port: "4318"
+                    uri: /v1/logs
+                    tls: "on"
+                    tls.verify: "on"
+                    Retry_Limit: "3"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
@@ -137,18 +143,11 @@ Resources:
                     Value: !Ref "AWS::AccountId"
 
               # -- Firelens log router sidecar --
-              # Receives app stdout via awsfirelens driver and forwards to Loki
               - Name: log_router
                 Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
                 Essential: false
                 FirelensConfiguration:
                   Type: fluentbit
-                  Options:
-                    # Custom config defines the opentelemetry output to OTLP -> Loki
-                    # Required because Batch EcsProperties does not auto-generate
-                    # Fluent Bit output config from app container awsfirelens options
-                    config-file-type: s3
-                    config-file-value: !Sub "arn:aws:s3:::${CodeS3Bucket}/fluent-bit/batch-fluent-bit.conf"
                 ResourceRequirements:
                   - Type: VCPU
                     Value: "0.25"
