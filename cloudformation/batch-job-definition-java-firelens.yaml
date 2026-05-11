@@ -70,6 +70,8 @@ Resources:
   # App stdout log group (visible in CloudWatch — same JSON as Loki would get)
   AppLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/batch/${ServiceName}/app"
       RetentionInDays: 7
@@ -77,6 +79,8 @@ Resources:
   # Firelens sidecar operational logs (for debugging Fluent Bit itself)
   FirelensLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
       RetentionInDays: 7
