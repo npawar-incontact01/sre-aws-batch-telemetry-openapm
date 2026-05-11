@@ -1,6 +1,9 @@
-# sre-aws-batch-telemetry-openapm
+# sre-aws-batch-telemetry — Python POC
 
-## POC: AWS Batch Telemetry to OpenAPM
+> **Branch:** `poc/python-aws-batch`
+> See also: [`poc/java-aws-batch`](../../tree/poc/java-aws-batch) for the Spring Boot / Java version.
+
+## POC: Python AWS Batch Telemetry → OpenAPM
 
 This project demonstrates a **generic, reusable solution** for sending **traces, metrics, and logs** from AWS Batch jobs to OpenAPM (Grafana Tempo / Mimir / Loki) via OpenTelemetry OTLP/HTTP protocol.
 
