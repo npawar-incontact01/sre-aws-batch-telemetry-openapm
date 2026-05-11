@@ -193,10 +193,10 @@ Outputs:
     Value: !Ref BatchJobDefinition
     Description: ARN of the Firelens-based Batch job definition
   FirelensLogGroup:
-    Value: !Ref FirelensLogGroup
-    Description: CloudWatch log group for Firelens sidecar operational logs
+    Value: "/aws/batch/sre-batch-telemetry-java/app"
+    Description: CloudWatch log group for Firelens sidecar operational logs (stream prefix firelens-sidecar/)
   AppLogGroup:
-    Value: !Ref AppLogGroup
+    Value: "/aws/batch/sre-batch-telemetry-java/app"
     Description: CloudWatch log group for app stdout (JSON)
   LokiQuery:
     Value: '{service_name="unknown_service"}'
