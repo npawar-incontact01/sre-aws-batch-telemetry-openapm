@@ -1,20 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Logback config — CONSOLE (stdout JSON) + OTel OTLP appender.
+  BRIAN'S FIRELENS APPROACH — Logback config: CONSOLE (stdout) only.
 
-  Logs flow:
-    SLF4J → Logback → OpenTelemetryAppender → OTLP/HTTP /v1/logs → OTel Collector → Loki
-    SLF4J → Logback → CONSOLE (stdout JSON) → local visibility
+  Log flow:
+    SLF4J → Logback → CONSOLE (stdout JSON)
+      → Firelens sidecar (aws-for-fluent-bit:3.3.0)
+      → opentelemetry plugin → OTLP/HTTP :4318/v1/logs
+      → OpenAPM OTel Collector → Loki
 
-  Fluent Bit 1.9.x opentelemetry plugin does not handle logs (metrics only).
-  Direct OTLP from the app is required for Batch on Fargate.
+  No direct OTel appender here — Firelens handles log routing.
 
-  trace_id and span_id are automatically injected by Micrometer Tracing via MDC,
-  enabling trace-log correlation in Grafana.
+  KNOWN LIMITATION: logs reach Loki but service_name="unknown_service"
+  because Firelens cannot set OTLP resource attributes (service.name).
+  See docs/FIRELENS-EVIDENCE.md for full analysis.
+
+  trace_id and span_id injected by Micrometer Tracing via MDC.
 -->
 <configuration>
 
-    <!-- stdout JSON for local dev / CloudWatch visibility -->
+    <!-- stdout JSON → picked up by Firelens sidecar → routed to Loki via OTLP -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
             <includeMdcKeyName>traceId</includeMdcKeyName>
@@ -25,18 +29,8 @@
         </encoder>
     </appender>
 
-    <!-- OTel OTLP appender → /v1/logs → OTel Collector → Loki
-         Endpoint and resource attributes are configured via OTEL_* env vars
-         set in the Batch job definition (same as traces/metrics). -->
-    <appender name="OpenTelemetry" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
-        <captureExperimentalAttributes>true</captureExperimentalAttributes>
-        <captureCodeAttributes>true</captureCodeAttributes>
-        <captureMdcAttributes>traceId,spanId</captureMdcAttributes>
-    </appender>
-
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
-        <appender-ref ref="OpenTelemetry"/>
     </root>
 
 </configuration>
