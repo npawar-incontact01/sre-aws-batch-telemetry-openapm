@@ -149,6 +149,10 @@ Resources:
                 Essential: false
                 FirelensConfiguration:
                   Type: fluentbit
+                Environment:
+                  # Enable debug logging to see if app container logs reach Fluent Bit
+                  - Name: FLB_LOG_LEVEL
+                    Value: debug
                 ResourceRequirements:
                   - Type: VCPU
                     Value: "0.25"
