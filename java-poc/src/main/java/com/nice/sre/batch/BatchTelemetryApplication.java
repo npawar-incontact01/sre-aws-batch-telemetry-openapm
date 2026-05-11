@@ -5,8 +5,15 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
-import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
+import io.opentelemetry.exporter.otlp.http.logs.OtlpHttpLogRecordExporter;
 import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.logs.SdkLoggerProvider;
+import io.opentelemetry.sdk.logs.export.BatchLogRecordProcessor;
+import io.opentelemetry.sdk.resources.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -31,14 +38,53 @@ public class BatchTelemetryApplication implements CommandLineRunner {
 
     private final MeterRegistry meterRegistry;
     private final Tracer tracer;
+    private final SdkLoggerProvider loggerProvider;
 
-    public BatchTelemetryApplication(MeterRegistry meterRegistry, Tracer tracer, OpenTelemetry openTelemetry) {
+    public BatchTelemetryApplication(MeterRegistry meterRegistry, Tracer tracer) {
         this.meterRegistry = meterRegistry;
         this.tracer = tracer;
-        // Connect logback OTel appender to the Spring-managed SDK instance.
-        // Without this, the appender uses GlobalOpenTelemetry (no-op) and
-        // logs arrive in Loki with service_name="unknown_service".
-        OpenTelemetryAppender.install(openTelemetry);
+        // Spring Boot 3.3's auto-configured OpenTelemetry bean has no SdkLoggerProvider
+        // (added in Spring Boot 3.4). Build a dedicated SDK for log export from OTEL_*
+        // env vars so every log record carries the correct service.name + resource attributes.
+        this.loggerProvider = buildLoggerProvider();
+        OpenTelemetryAppender.install(
+                OpenTelemetrySdk.builder().setLoggerProvider(this.loggerProvider).build());
+    }
+
+    /**
+     * Build an OTel SdkLoggerProvider from OTEL_* env vars.
+     * Reads OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, and OTEL_RESOURCE_ATTRIBUTES
+     * (comma-separated key=value pairs) — same env vars set in the Batch job definition.
+     */
+    private static SdkLoggerProvider buildLoggerProvider() {
+        String endpoint = System.getenv().getOrDefault(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318");
+        String serviceName = System.getenv().getOrDefault(
+                "OTEL_SERVICE_NAME", "sre-batch-telemetry-java");
+
+        AttributesBuilder attrs = Attributes.builder()
+                .put(AttributeKey.stringKey("service.name"), serviceName);
+
+        // Overlay OTEL_RESOURCE_ATTRIBUTES (e.g. "environment=dev,region=us-west-2")
+        String rawAttrs = System.getenv("OTEL_RESOURCE_ATTRIBUTES");
+        if (rawAttrs != null && !rawAttrs.isBlank()) {
+            for (String pair : rawAttrs.split(",")) {
+                String[] kv = pair.split("=", 2);
+                if (kv.length == 2) {
+                    attrs.put(AttributeKey.stringKey(kv[0].trim()), kv[1].trim());
+                }
+            }
+        }
+
+        OtlpHttpLogRecordExporter logExporter = OtlpHttpLogRecordExporter.builder()
+                .setEndpoint(endpoint + "/v1/logs")
+                .build();
+
+        return SdkLoggerProvider.builder()
+                .setResource(Resource.getDefault().merge(Resource.create(attrs.build())))
+                .addLogRecordProcessor(BatchLogRecordProcessor.builder(logExporter).build())
+                .build();
     }
 
     public static void main(String[] args) {
@@ -161,7 +207,8 @@ public class BatchTelemetryApplication implements CommandLineRunner {
             log.warn("Error flushing MeterRegistry: {}", e.getMessage());
         }
 
-        // LoggerProvider shutdown is handled by OtelLogConfig @PreDestroy
+        // Force flush of any buffered log records before the 15s sleep window
+        loggerProvider.forceFlush();
         log.info("Telemetry flush complete");
     }
 
