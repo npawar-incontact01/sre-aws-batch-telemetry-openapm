@@ -1,12 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   AWS Batch Job Definition for Java Spring Boot telemetry POC.
-  Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
+  Single container (EcsProperties): app only — no Firelens sidecar.
   All 3 signals via OTLP/HTTP to apm-na1:4318 (same VPC endpoint):
     Traces  -> /v1/traces  -> Tempo
     Metrics -> /v1/metrics -> Mimir
-    Logs    -> /v1/logs    -> Loki (via Firelens opentelemetry plugin)
-  Consistent with NICE ECS microservices Firelens pattern (org standard).
+    Logs    -> /v1/logs    -> Loki (via OTel logback appender, direct OTLP)
+  NOTE: Fluent Bit 1.9.x (aws-for-fluent-bit:stable) opentelemetry plugin
+  does not handle logs (metrics only). Direct OTLP from the app is required.
 
 Parameters:
   EnvironmentName:
@@ -40,23 +41,16 @@ Parameters:
   OpenapmProductName:
     Type: String
     Default: "sre-batch-telemetry"
-  # OTLP host for logs (same VPC endpoint as traces/metrics - port 4318 is the only exposed port)
-  # Logs are sent as OTLP via Fluent Bit opentelemetry plugin -> /v1/logs
-  # The OTel collector at port 4318 routes OTLP logs to Loki internally
-  OtelEndpointHost:
-    Type: String
-    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
-    Description: "OTLP endpoint hostname - same host used for traces/metrics"
   AppVcpu:
     Type: String
     Default: "0.75"
     AllowedValues: ["0.25", "0.5", "0.75", "1", "2", "4"]
-    Description: vCPU for the app container (log_router always gets 0.25)
+    Description: vCPU for the app container
   AppMemory:
     Type: String
     Default: "1920"
     AllowedValues: ["512", "896", "1024", "1920", "2048", "4096", "8192"]
-    Description: Memory MiB for the app container (log_router always gets 128)
+    Description: Memory MiB for the app container
   Team:
     Type: String
     Default: sre
@@ -65,11 +59,11 @@ Parameters:
     Default: "0000"
 
 Resources:
-  # Firelens sidecar operational logs go here (not the app logs)
-  FirelensLogGroup:
+  # App stdout (JSON) — visible in CloudWatch for debugging
+  AppLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/app"
       RetentionInDays: 7
 
   BatchJobDefinition:
@@ -83,7 +77,7 @@ Resources:
         AttemptDurationSeconds: 600
       RetryStrategy:
         Attempts: 1
-      # EcsProperties is required for multi-container (Firelens sidecar pattern)
+      # EcsProperties used even for single container (required for Fargate Batch)
       EcsProperties:
         TaskProperties:
           - ExecutionRoleArn: !Ref ExecutionRoleArn
@@ -112,20 +106,14 @@ Resources:
                     Value: !Ref AppVcpu
                   - Type: MEMORY
                     Value: !Ref AppMemory
-                # App stdout -> Firelens sidecar -> OTLP /v1/logs -> Loki
-                # Same VPC endpoint (port 4318) used for traces and metrics
+                # App stdout (JSON via logstash-logback-encoder) -> CloudWatch
+                # Logs also go directly via OTel logback appender -> OTLP/HTTP -> Loki
                 LogConfiguration:
-                  LogDriver: awsfirelens
+                  LogDriver: awslogs
                   Options:
-                    Name: opentelemetry
-                    match: "*"
-                    Host: !Ref OtelEndpointHost
-                    Port: "4318"
-                    uri: /v1/logs
-                    tls: "on"
-                    tls.verify: "off"
-                    Retry_Limit: "3"
-                    log_response_payload: "true"
+                    awslogs-group: !Ref AppLogGroup
+                    awslogs-region: !Ref "AWS::Region"
+                    awslogs-stream-prefix: app
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
@@ -144,28 +132,6 @@ Resources:
                   - Name: AWS_ACCOUNT_ID
                     Value: !Ref "AWS::AccountId"
 
-              # -- Firelens log router sidecar --
-              - Name: log_router
-                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
-                Essential: false
-                FirelensConfiguration:
-                  Type: fluentbit
-                Environment:
-                  # Enable debug logging to see if app container logs reach Fluent Bit
-                  - Name: FLB_LOG_LEVEL
-                    Value: debug
-                ResourceRequirements:
-                  - Type: VCPU
-                    Value: "0.25"
-                  - Type: MEMORY
-                    Value: "128"
-                # Sidecar's own operational logs go to CloudWatch for debugging
-                LogConfiguration:
-                  LogDriver: awslogs
-                  Options:
-                    awslogs-group: !Ref FirelensLogGroup
-                    awslogs-region: !Ref "AWS::Region"
-                    awslogs-stream-prefix: firelens
 
       Tags:
         Environment: !Ref EnvironmentName
@@ -177,6 +143,6 @@ Outputs:
   JobDefinitionArn:
     Value: !Ref BatchJobDefinition
     Description: ARN of the Batch job definition
-  FirelensLogGroupName:
-    Value: !Ref FirelensLogGroup
-    Description: CloudWatch log group for Firelens sidecar operational logs
+  AppLogGroupName:
+    Value: !Ref AppLogGroup
+    Description: CloudWatch log group for app stdout (JSON)
