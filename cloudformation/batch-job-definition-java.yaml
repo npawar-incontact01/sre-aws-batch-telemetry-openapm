@@ -123,6 +123,11 @@ Resources:
                     logs_uri: /v1/logs
                     tls: "on"
                     Retry_Limit: "3"
+                    # Sets service.name resource attribute on OTLP logs.
+                    # OTel Collector attributes processor maps service.name -> service_name Loki label.
+                    # Without this, Loki shows service_name="unknown_service".
+                    # Format: "key value" — add_label takes key+value as a single string.
+                    add_label: !Sub "service.name ${ServiceName}"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
