@@ -126,11 +126,6 @@ Resources:
                     tls: "on"
                     tls.verify: "on"
                     Retry_Limit: "3"
-                    # Resource attributes for Loki stream label mapping.
-                    # Firelens translates "add_label <key>: <val>" -> "add_label <key> <val>" in Fluent Bit config
-                    "add_label openapm_product_name": !Ref OpenapmProductName
-                    "add_label service_name": !Ref ServiceName
-                    "add_label region": !Sub "${AWS::Region}"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
