@@ -118,6 +118,7 @@ Resources:
                   LogDriver: awsfirelens
                   Options:
                     Name: opentelemetry
+                    match: "*"
                     Host: !Ref OtelEndpointHost
                     Port: "4318"
                     uri: /v1/logs
