@@ -120,7 +120,7 @@ Resources:
                     match: "*"
                     Host: !Ref OtelEndpointHost
                     Port: "4318"
-                    uri: /v1/logs
+                    logs_uri: /v1/logs
                     tls: "on"
                     Retry_Limit: "3"
                 Environment:
