@@ -72,11 +72,20 @@
             <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
 
-        <!-- Logs: stdout JSON (CloudWatch) + OTel bridge → OTLP/HTTP /v1/logs → Loki -->
+        <!-- Logs: stdout JSON for local dev visibility -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
             <version>8.0</version>
+        </dependency>
+
+        <!-- Logs: OTel logback appender → OTLP/HTTP /v1/logs → Loki
+             Sends logs directly to the same OTLP endpoint as traces/metrics.
+             Required because Fluent Bit 1.9.x opentelemetry plugin doesn't handle logs. -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-logback-appender-1.0</artifactId>
+            <version>2.4.0-alpha</version>
         </dependency>
 
     </dependencies>

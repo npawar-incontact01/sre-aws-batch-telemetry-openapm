@@ -2,8 +2,8 @@
 # Spring Boot Batch Telemetry — Micrometer + OTel Bridge
 # Traces  → OTLP/HTTP :4318 → Tempo
 # Metrics → OTLP/HTTP :4318 → Mimir
-# Logs    → stdout (JSON) → Firelens (Fluent Bit) → Loki
-#           consistent with NICE ECS microservices (Brian's recommendation)
+# Logs    → OTel logback appender → OTLP/HTTP :4318 → Loki
+#           (Fluent Bit 1.9.x opentelemetry plugin doesn't handle logs)
 # ──────────────────────────────────────────────────────────────────
 
 spring:
@@ -36,12 +36,10 @@ management:
           region: ${AWS_REGION:us-west-2}
           account.id: ${AWS_ACCOUNT_ID:723346695882}
 
-
-
-# ── Logs: stdout (JSON via logstash-logback-encoder) → Firelens → Loki ──
-# No OTLP log export. Firelens is configured at the job definition level.
-# traceId / spanId are injected into JSON by Micrometer Tracing via MDC.
-
+# ── Logs (OTel logback appender → OTLP/HTTP → Loki) ──
+# The OpenTelemetryAppender reads OTEL_EXPORTER_OTLP_ENDPOINT + OTEL_RESOURCE_ATTRIBUTES
+# from environment variables (same as traces/metrics).
+# Spring Boot 3.x also exposes logging.export for SDK autoconfigure.
 logging:
   level:
     com.nice.sre.batch: INFO
