@@ -111,8 +111,6 @@ Resources:
                     RemoveKeys: "container_id,ecs_task_arn"
                     LabelKeys: "level,logger_name"
                     LineFormat: json
-                    BatchWait: "1"
-                    BatchSize: "1048576"
                     tls: "on"
                     tls.verify: "on"
                 Environment:
