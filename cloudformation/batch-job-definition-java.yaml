@@ -2,7 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   AWS Batch Job Definition for Java Spring Boot telemetry POC.
   Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
-  Traces + metrics via OTLP/HTTP :4318. Logs via Firelens -> Loki.
+  All 3 signals via OTLP/HTTP to apm-na1:4318 (same VPC endpoint):
+    Traces  -> /v1/traces  -> Tempo
+    Metrics -> /v1/metrics -> Mimir
+    Logs    -> /v1/logs    -> Loki (via Firelens opentelemetry plugin)
   Consistent with NICE ECS microservices Firelens pattern (org standard).
 
 Parameters:
@@ -37,16 +40,13 @@ Parameters:
   OpenapmProductName:
     Type: String
     Default: "sre-batch-telemetry"
-  # Loki push endpoint - separate host/port from the OTLP gateway.
-  # Port 3100 is internal k8s only. Ask OpenAPM team for correct external port.
-  LokiEndpointHost:
+  # OTLP host for logs (same VPC endpoint as traces/metrics - port 4318 is the only exposed port)
+  # Logs are sent as OTLP via Fluent Bit opentelemetry plugin -> /v1/logs
+  # The OTel collector at port 4318 routes OTLP logs to Loki internally
+  OtelEndpointHost:
     Type: String
     Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
-    Description: "Loki push hostname"
-  LokiEndpointPort:
-    Type: String
-    Default: "3100"
-    Description: "Loki push port. Port 3100 = internal k8s only. Update once correct external port is confirmed."
+    Description: "OTLP endpoint hostname - same host used for traces/metrics"
   AppVcpu:
     Type: String
     Default: "0.75"
@@ -112,20 +112,20 @@ Resources:
                     Value: !Ref AppVcpu
                   - Type: MEMORY
                     Value: !Ref AppMemory
-                # App stdout -> Firelens sidecar -> Loki via http output plugin
-                # Same pattern as docker/fluent-bit/fluent-bit.conf used by ECS microservices
+                # App stdout -> Firelens sidecar -> OTLP collector at :4318 -> Loki
+                # Uses Fluent Bit opentelemetry output plugin (OTLP/HTTP logs)
+                # Port 4318 is the VPC-private OTLP endpoint - same one traces/metrics use
+                # The collector at 4318 receives /v1/logs and routes to Loki internally
                 LogConfiguration:
                   LogDriver: awsfirelens
                   Options:
-                    Name: http
-                    Host: !Ref LokiEndpointHost
-                    Port: !Ref LokiEndpointPort
-                    URI: /loki/api/v1/push
-                    Format: json
+                    Name: opentelemetry
+                    Host: !Ref OtelEndpointHost
+                    Port: "4318"
+                    logs_uri: /v1/logs
                     tls: "on"
                     tls.verify: "on"
                     Retry_Limit: "3"
-                    Header: "Content-Type application/json"
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
