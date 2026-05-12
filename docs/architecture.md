@@ -4,7 +4,7 @@
 
 This project exports all 3 telemetry signals (**traces, metrics, logs**) from AWS Batch jobs (Fargate) in the `mon-sandbox` account to OpenAPM via **OTLP/HTTP on port 4318** through a **VPC Endpoint (PrivateLink)**.
 
-Key design decision: All signals go through the same endpoint and port — no sidecars, no Firelens, no OTel Collector in the path.
+Key design decision: Two approaches implemented and both confirmed working — (A) direct OTLP from the app (`poc/java-aws-batch`) and (B) Firelens sidecar approach matching ECS microservice patterns (`poc/java-firelens-brian-approach`).
 
 ---
 
@@ -198,12 +198,27 @@ Logs emitted:
 
 ---
 
-## Alternative Approach: Firelens (Not Implemented)
+## Alternative Approach: Firelens — Confirmed Working ✅
 
-AWS Batch added Firelens support (April 2025), which could route container stdout/stderr to Loki via Fluent Bit sidecar. However:
+AWS Batch added Firelens support (April 2025). This approach (`poc/java-firelens-brian-approach`) is now fully implemented and confirmed working, matching how ECS microservices operate at NICE.
 
-1. All 3 signals already work via OTLP/HTTP on port 4318
-2. Firelens adds complexity (sidecar container, config management)
-3. Loki native port (3100) is not open through the VPC Endpoint
+### Firelens Architecture
 
-A `batch-job-definition-firelens.yaml` template is provided if this approach is needed in the future.
+```
+AWS Batch Fargate Task (1 vCPU / 2048 MiB)
+├── app container (amazoncorretto:17 — 0.75 vCPU / 1920 MiB)
+│     ├── Micrometer Tracing → OTLP/HTTP :4318 → Tempo
+│     ├── Micrometer OTLP Registry → OTLP/HTTP :4318 → Mimir
+│     └── stdout (JSON Logback) → Firelens Unix socket
+│
+└── log_router container (aws-for-fluent-bit:init-3.2.4 — 0.25 vCPU / 128 MiB)
+      Downloads custom config from S3 at startup
+      ├── record_modifier: injects service_name, openapm_product_name, region
+      ├── opentelemetry output (logs_body_key_attributes true)
+      │     → OTLP/HTTP :4318 → Loki  ✅ correct service_name label
+      └── cloudwatch_logs output → /aws/batch/sre-batch-telemetry-java
+```
+
+**Key:** Use `aws-for-fluent-bit:init-3.2.4` (not `:stable` which is Fluent Bit 1.9.x with no log support). The `init` variant downloads a custom Fluent Bit config from S3 at container startup — this works on Fargate.
+
+See [FIRELENS-EVIDENCE.md](FIRELENS-EVIDENCE.md) for full details.

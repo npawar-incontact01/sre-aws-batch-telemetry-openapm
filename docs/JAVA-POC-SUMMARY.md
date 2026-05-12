@@ -2,11 +2,13 @@
 
 ## Objective
 
-Prove that a **Java Spring Boot AWS Batch job running on Fargate** can send all three OpenTelemetry signals — traces, metrics, and logs — to **OpenAPM** (Grafana Tempo / Mimir / Loki) with correct `service_name` labels, without ECR push and without Firelens.
+Prove that a **Java Spring Boot AWS Batch job running on Fargate** can send all three OpenTelemetry signals — traces, metrics, and logs — to **OpenAPM** (Grafana Tempo / Mimir / Loki) with correct `service_name` labels, without ECR push. Two approaches were implemented and both confirmed working.
 
 ---
 
 ## What We Achieved
+
+### Approach A — Direct OTLP (`poc/java-aws-batch`)
 
 | Signal | Library | Destination | Label in Grafana | Status |
 |--------|---------|-------------|-----------------|--------|
@@ -14,7 +16,15 @@ Prove that a **Java Spring Boot AWS Batch job running on Fargate** can send all 
 | Metrics | Micrometer OTLP Registry | Mimir | `service_name=sre-batch-telemetry-java` | ✅ Working |
 | Logs | OTel Logback Appender + custom `SdkLoggerProvider` | Loki | `service_name=sre-batch-telemetry-java` | ✅ Working |
 
-All three signals carry matching `service_name` labels with environment, region, account, and product labels, enabling correlated trace-log drill-down in Grafana Explore.
+### Approach B — Firelens (`poc/java-firelens-brian-approach`) — Brian's Recommended Approach
+
+| Signal | Library | Destination | Label in Grafana | Status |
+|--------|---------|-------------|-----------------|--------|
+| Traces | Micrometer Tracing (OTel bridge) | Tempo | `service.name=sre-batch-telemetry-java` | ✅ Working |
+| Metrics | Micrometer OTLP Registry | Mimir | `service_name=sre-batch-telemetry-java` | ✅ Working |
+| Logs | Firelens sidecar (`aws-for-fluent-bit:init-3.2.4`) | Loki | `service_name=sre-batch-telemetry-java` | ✅ Working |
+
+Both approaches confirmed with correct `service_name` labels. See [FIRELENS-EVIDENCE.md](FIRELENS-EVIDENCE.md) for the Firelens journey and resolution.
 
 Additional log fields captured automatically:
 - `code_filepath`, `code_function`, `code_lineno`, `code_namespace` (from `captureCodeAttributes=true`)
