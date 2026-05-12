@@ -4,17 +4,16 @@ Description: >
   Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
   Traces  -> Micrometer Tracing -> OTLP/HTTP :4318/v1/traces  -> Tempo  [WORKING]
   Metrics -> Micrometer OTLP   -> OTLP/HTTP :4318/v1/metrics -> Mimir  [WORKING]
-  Logs    -> stdout -> Firelens (aws-for-fluent-bit:3.3.0) -> OTLP/HTTP :4318/v1/logs -> Loki
-             [REACHES LOKI but service_name=unknown_service — HARD BLOCKER explained below]
+  Logs    -> stdout -> Firelens (aws-for-fluent-bit:init-3.2.4) -> OTLP/HTTP :4318/v1/logs -> Loki
+             [FIXED: service_name set correctly via record_modifier + logs_body_key_attributes]
 
-  ROOT CAUSE of wrong label:
-    Firelens inline ECS options can set Loki STREAM labels (add_label) but
-    cannot set OTLP resource attributes (service.name). The OpenAPM OTel
-    Collector maps service.name -> service_name Loki label. Since Firelens
-    sends no service.name resource attribute, the collector falls back to
-    service_name="unknown_service".
-    This is an architectural limitation of Firelens — it cannot be fixed
-    via configuration alone without modifying the collector pipeline.
+  FIX based on R&D team pattern (notification-manager-dynamic-routed):
+    Uses aws-for-fluent-bit:init-3.2.4 image which downloads custom Fluent Bit config
+    from S3 at startup (aws_fluent_bit_init_s3_1 env var). The config uses:
+      - record_modifier filter: adds service_name, openapm_product_name, region as record fields
+      - logs_body_key_attributes true: promotes those fields to OTLP log attributes
+      - OpenAPM collector reads log attributes -> maps service_name to Loki label
+    The init-variant S3 download works on Fargate (container-level, not ECS-level).
 
 Parameters:
   EnvironmentName:
@@ -50,6 +49,14 @@ Parameters:
   OtelEndpointHost:
     Type: String
     Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+  FirelensConfigS3Path:
+    Type: String
+    Default: "s3://sre-batch-telemetry-code-723346695882/fluent-bit/batch-fluent-bit.conf"
+    Description: >
+      S3 path to the Fluent Bit config file. The init-variant image downloads this
+      at startup via aws_fluent_bit_init_s3_1 env var — works on Fargate unlike
+      FirelensConfiguration S3 options which are ECS-only.
+      Pattern from R&D team: saas-platform-ms-notification-manager-dynamic-routed.
   AppVcpu:
     Type: String
     Default: "1"
@@ -119,27 +126,13 @@ Resources:
                     Value: "0.75"
                   - Type: MEMORY
                     Value: "1920"
-                # stdout -> Firelens -> opentelemetry plugin -> OTLP /v1/logs -> Loki
-                # KNOWN LIMITATION: logs reach Loki but service_name="unknown_service"
-                # because Firelens cannot set OTLP resource attributes (service.name).
-                # add_label sets a Loki stream label, not an OTLP resource attribute.
-                # The OpenAPM collector maps service.name resource attr -> service_name Loki label.
-                # Without service.name in OTLP resource, the collector has no value to map.
+                # stdout -> Firelens -> custom Fluent Bit config (S3) -> OTLP /v1/logs -> Loki
+                # The log_router sidecar's record_modifier adds service_name as a record field.
+                # logs_body_key_attributes true promotes it to an OTLP log attribute.
+                # OpenAPM collector reads that attribute -> correct service_name Loki label.
                 LogConfiguration:
                   LogDriver: awsfirelens
-                  Options:
-                    Name: opentelemetry
-                    match: "*"
-                    Host: !Ref OtelEndpointHost
-                    Port: "4318"
-                    logs_uri: /v1/logs
-                    tls: "on"
-                    Retry_Limit: "3"
-                    # ATTEMPTED FIX (does NOT work):
-                    # add_label sets a Loki stream label on the HTTP request,
-                    # not an OTLP resourceLogs.resource.attributes entry.
-                    # The collector ignores stream labels when building service_name.
-                    add_label: !Sub "service_name ${ServiceName}"
+                  Options: {}
                 Environment:
                   - Name: OTEL_SERVICE_NAME
                     Value: !Ref ServiceName
@@ -159,16 +152,36 @@ Resources:
                     Value: !Ref "AWS::AccountId"
 
               # ── Firelens log router sidecar ────────────────────────────────
-              # aws-for-fluent-bit:3.3.0 = Fluent Bit 5.0.3
-              # IMPORTANT: DO NOT use :stable tag — it ships Fluent Bit 1.9.10
-              # which has NO log support in the opentelemetry plugin (metrics only).
-              # Firelens support for Batch:
-              # https://aws.amazon.com/about-aws/whats-new/2025/04/aws-batch-amazon-elastic-container-service-exec-firelens-log-router/
+              # Uses the init-variant image which downloads Fluent Bit config from S3
+              # at container startup via aws_fluent_bit_init_s3_1 env var.
+              # This is the same pattern as the R&D team's notification-manager-dynamic-routed.
+              # The init-variant works on Fargate (container downloads config itself,
+              # unlike FirelensConfiguration S3 option which is ECS-infrastructure-only).
+              #
+              # The custom config (batch-fluent-bit.conf) uses:
+              #   record_modifier: adds service_name, openapm_product_name, region
+              #   logs_body_key_attributes true: promotes fields to OTLP log attributes
+              #   -> OpenAPM collector maps service_name attribute to Loki label correctly
               - Name: log_router
-                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:3.3.0"
+                Image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:init-3.2.4"
                 Essential: false
                 FirelensConfiguration:
                   Type: fluentbit
+                  Options:
+                    enable-ecs-log-metadata: "false"
+                Environment:
+                  # Used by record_modifier in batch-fluent-bit.conf
+                  - Name: SERVICE_NAME
+                    Value: !Ref ServiceName
+                  - Name: PRODUCT_NAME
+                    Value: !Ref OpenapmProductName
+                  - Name: REGION
+                    Value: !Ref "AWS::Region"
+                  - Name: APM_HOST
+                    Value: !Ref OtelEndpointHost
+                  # init-variant: download custom Fluent Bit config from S3 at startup
+                  - Name: aws_fluent_bit_init_s3_1
+                    Value: !Ref FirelensConfigS3Path
                 ResourceRequirements:
                   - Type: VCPU
                     Value: "0.25"
@@ -177,8 +190,6 @@ Resources:
                 LogConfiguration:
                   LogDriver: awslogs
                   Options:
-                    # Hardcoded name — EarlyValidation does NOT evaluate !Sub, so a dynamic
-                    # reference would cause "resource not found" even when the group exists.
                     awslogs-group: "/aws/batch/sre-batch-telemetry-java/app"
                     awslogs-region: !Ref "AWS::Region"
                     awslogs-stream-prefix: firelens-sidecar
@@ -201,7 +212,8 @@ Outputs:
     Value: "/aws/batch/sre-batch-telemetry-java/app"
     Description: CloudWatch log group for app stdout (JSON)
   LokiQuery:
-    Value: '{service_name="unknown_service"}'
+    Value: '{service_name="sre-batch-telemetry-java"}'
     Description: >
-      Grafana Loki query to find these logs. service_name is unknown_service
-      because Firelens cannot set OTLP resource attributes. See README for details.
+      Grafana Loki query to find these logs. service_name is set correctly via
+      record_modifier + logs_body_key_attributes in the custom Fluent Bit config.
+      Pattern from R&D team notification-manager-dynamic-routed.
