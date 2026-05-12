@@ -81,9 +81,10 @@ Java Spring Boot 3.3.13 batch job:
 Fat JAR built locally, uploaded to S3. No ECR push. No sidecar.  
 See [docs/JAVA-POC-SUMMARY.md](docs/JAVA-POC-SUMMARY.md).
 
-### `poc/java-firelens-brian-approach` — Evidence for Brian ⚠️
+### `poc/java-firelens-brian-approach` — Brian's Firelens Approach ✅
 
-Implements Architect Brian's recommended approach: **Firelens sidecar for log routing**, same pattern as ECS microservices. Multi-container Batch task (app + Fluent Bit sidecar). Logs reach Loki but `service_name=unknown_service`.  
+Implements Architect Brian's recommended approach: **Firelens sidecar for log routing**, same pattern as ECS microservices. Multi-container Batch task (app + Fluent Bit sidecar). All 3 signals working with correct `service_name` in Loki.  
+Uses `aws-for-fluent-bit:init-3.2.4` + S3 custom config (`record_modifier` + `logs_body_key_attributes true`) — pattern from R&D team.  
 See [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md).
 
 ---
@@ -279,15 +280,15 @@ Python 3.11, OTel SDK. Code fetched from S3 at runtime. All signals reach OpenAP
 
 ---
 
-### Brian's Firelens Approach (`poc/java-firelens-brian-approach`) — Evidence ⚠️
+### Brian's Firelens Approach (`poc/java-firelens-brian-approach`) ✅
 
 | Signal | Result |
 |--------|--------|
 | Traces | ✅ Correct (`service.name=sre-batch-telemetry-java`) |
 | Metrics | ✅ Correct (`service_name=sre-batch-telemetry-java`) |
-| Logs | ⚠️ Reach Loki but `service_name=unknown_service` |
+| Logs | ✅ Correct (`service_name=sre-batch-telemetry-java`) |
 
-**Confirmed job:** `464469c5` — SUCCEEDED. Logs visible in Loki under `{service_name="unknown_service"}`.
+**Confirmed job:** `91ef7036` — SUCCEEDED. Logs visible in Loki under `{service_name="sre-batch-telemetry-java"}` with correct indexed labels.
 
 ---
 
@@ -333,23 +334,29 @@ Python 3.11, OTel SDK. Code fetched from S3 at runtime. All signals reach OpenAP
 
 ---
 
-### Problem 5 — Firelens `service_name=unknown_service` (Hard Architectural Blocker)
+### Problem 5 — Firelens `service_name=unknown_service` (Now Resolved ✅)
 
-**Symptom:** On Firelens branch, logs arrive in Loki with `service_name=unknown_service` regardless of configuration.
+**Symptom:** On Firelens branch, logs arrived in Loki with `service_name=unknown_service` regardless of configuration.
 
-**Root cause:** The OpenAPM OTel Collector maps the OTLP **resource attribute** `service.name` → Loki stream label `service_name`. Firelens sends app stdout as raw OTLP log records with **empty resource attributes**. The `add_label` ECS option only adds an HTTP-level Loki stream label — the Collector ignores it when building `service_name`.
+**Root cause:** The OpenAPM OTel Collector maps the OTLP **resource attribute** `service.name` → Loki stream label `service_name`. Firelens with the standard `aws-for-fluent-bit` image sends app stdout as raw OTLP log records with **empty resource attributes**. The `add_label` ECS option only adds an HTTP-level Loki stream label — the Collector ignores it when building `service_name`.
 
-**What we tried:**
+**Attempts that failed:**
 
 | Attempt | Result |
 |---|---|
 | `add_label: "service.name sre-batch-telemetry-java"` | Rejected by ECS (dot in key name breaks ECS JSON options) |
 | `add_label: "service_name sre-batch-telemetry-java"` | Sets HTTP stream label, not OTLP resource attr — collector ignores it |
 | `OTEL_SERVICE_NAME` env var on app container | Only affects traces/metrics; Firelens sidecar has no access to app env vars |
-| Custom Fluent Bit config with `record_modifier` filter | Blocked on Fargate — S3 config source is ECS-only feature |
 | `aws-for-fluent-bit:stable` image | Ships Fluent Bit 1.9.x — opentelemetry plugin has no log support (metrics only) |
 
-**Cannot be fixed with Firelens alone.** Would require either custom Fluent Bit config (Fargate-blocked) or OpenAPM Collector pipeline changes.
+**Solution (from R&D team — `notification-manager-dynamic-routed`):**
+
+1. Use `aws-for-fluent-bit:init-3.2.4` — the `init` variant downloads a custom Fluent Bit config from S3 at container startup via the `aws_fluent_bit_init_s3_1` env var. This works on Fargate because it's a **container-level** S3 download (unlike `FirelensConfiguration` S3 options which are ECS-infrastructure-only and Fargate-blocked).
+2. Custom config uses `record_modifier` filter to add `service_name`, `openapm_product_name`, `region` as Fluent Bit record fields.
+3. `logs_body_key_attributes true` on the OpenTelemetry output promotes those record fields to **OTLP log resource attributes**.
+4. OpenAPM Collector reads the OTLP resource attribute `service_name` → correct Loki stream label.
+
+**Confirmed working:** Job `91ef7036` — Loki query `{service_name="sre-batch-telemetry-java"}` returns logs with correct indexed labels.
 
 ---
 
@@ -379,24 +386,25 @@ Multiple errors during CF deployment of the Firelens job definition stack:
 
 ## 8. What Is Still Pending
 
-### 8.1 Firelens Evidence — Grafana Validation
+### 8.1 Both Approaches Now Confirmed Working
 
-**Job `464469c5-9d2a-4822-b421-7dd16ad4f969`** was submitted. Next step:
-1. Confirm status: `aws batch describe-jobs --jobs 464469c5-... --region us-west-2`
-2. Open Grafana Loki → query `{service_name="unknown_service"}` with time range during job run
-3. Capture screenshot for Brian showing logs arrive but with wrong label
+All pending validation is complete:
+
+| Branch | Approach | Logs `service_name` | Job confirmed |
+|---|---|---|---|
+| `poc/java-aws-batch` | Direct OTel Logback appender | ✅ `sre-batch-telemetry-java` | Multiple jobs |
+| `poc/java-firelens-brian-approach` | Firelens + init image + S3 config | ✅ `sre-batch-telemetry-java` | Job `91ef7036` |
 
 ### 8.2 Architecture Decision with Brian
 
-Three paths forward for log routing in Batch jobs. Brian's input is needed:
+Two fully working paths forward for log routing in Batch jobs:
 
 | Path | Description | `service_name` correct? | ECS Consistent? | Complexity |
 |---|---|---|---|---|
-| **A — Current** | OTel Logback appender → OTLP/HTTP direct | ✅ Yes | ❌ App-level change per service | Low |
-| **B — OTel Collector sidecar** | Replace Firelens with `otel/opentelemetry-collector-contrib` sidecar | ✅ Yes | Partial | Medium |
-| **C — Firelens (Brian's)** | Cannot produce correct `service_name` without collector changes | ❌ No | ✅ Yes | Blocked |
+| **A — Direct OTel** | OTel Logback appender → OTLP/HTTP direct | ✅ Yes | ❌ App-level change per service | Low |
+| **B — Firelens (Brian's)** | `init` image + S3 config + `record_modifier` + `logs_body_key_attributes` | ✅ Yes | ✅ Yes | Medium |
 
-Path A is implemented and confirmed working on `poc/java-aws-batch`.
+Both paths are implemented and confirmed working. Path B matches ECS microservice patterns.
 
 ### 8.3 Python Library Packaging
 
@@ -435,18 +443,21 @@ Full evidence: [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md)
 |--------|--------|-------|
 | Traces | ✅ Working | Micrometer direct OTLP — no Firelens involved |
 | Metrics | ✅ Working | Micrometer direct OTLP — no Firelens involved |
-| Logs delivery | ✅ Reach Loki | HTTP 200 from OTLP collector confirmed |
-| Logs label | ❌ Wrong | `service_name=unknown_service` |
+| Logs delivery | ✅ Working | Via Firelens → OTLP → OpenAPM → Loki |
+| Logs label | ✅ Correct | `service_name=sre-batch-telemetry-java` in Loki |
 
-### Why It Fails
+### How It Works (R&D Team Pattern)
 
-The OpenAPM OTel Collector maps OTLP resource attribute `service.name` → Loki stream label `service_name`:
+The `init` image variant of `aws-for-fluent-bit` downloads a custom Fluent Bit config from S3 at container startup. The custom config uses `record_modifier` to inject `service_name` as a Fluent Bit record field, and `logs_body_key_attributes true` promotes those fields to OTLP log resource attributes — which the OpenAPM Collector then maps to the correct Loki stream label:
 
 ```
-OTLP log record (from Firelens)
-  resourceLogs.resource.attributes = {}   ← EMPTY — Firelens sets no resource attrs
-  HTTP label: service_name=...            ← Collector ignores HTTP labels for service_name mapping
-  Result: collector fallback → service_name="unknown_service"
+OTLP log record (from Firelens with init image + custom config)
+  resourceLogs.resource.attributes = {
+    service_name = "sre-batch-telemetry-java"   ← set by record_modifier + logs_body_key_attributes
+    openapm_product_name = "sre-batch-telemetry"
+    region = "us-west-2"
+  }
+  Result: collector maps service_name → correct Loki label ✅
 ```
 
 ### Critical Fluent Bit Version Discovery
@@ -456,14 +467,15 @@ OTLP log record (from Firelens)
 | Image | Fluent Bit version | Log support |
 |---|---|---|
 | `:stable` | 1.9.10 | ❌ Metrics only |
-| `:3.3.0` | 5.0.3 | ✅ Logs work — but wrong label |
+| `:3.3.0` | 5.0.3 | ✅ Logs work |
+| `:init-3.2.4` | 4.x | ✅ Logs work + S3 config download |
 
-### Comparison: Firelens vs Direct OTLP
+### Comparison: Firelens (init image) vs Direct OTLP
 
-| | Brian's Firelens | Working Solution (Direct OTLP) |
+| | Brian's Firelens (init image) | Working Solution (Direct OTLP) |
 |---|---|---|
-| `service_name` label | ❌ `unknown_service` | ✅ `sre-batch-telemetry-java` |
-| Trace-log correlation | ❌ No trace context | ✅ `traceId` + `spanId` in every log |
+| `service_name` label | ✅ `sre-batch-telemetry-java` | ✅ `sre-batch-telemetry-java` |
+| Trace-log correlation | ✅ `traceId` + `spanId` in every log | ✅ `traceId` + `spanId` in every log |
 | ECS pattern consistency | ✅ Same as ECS microservices | ❌ App-level change required |
 | Multi-container overhead | ❌ Extra sidecar container | ✅ Single container |
 | Custom config (Fargate) | ❌ Blocked | N/A |
