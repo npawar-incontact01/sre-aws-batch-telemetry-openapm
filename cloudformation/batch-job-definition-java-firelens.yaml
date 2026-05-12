@@ -1,19 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  BRIAN'S APPROACH: Java Spring Boot Batch job with Firelens log routing.
-  Multi-container (EcsProperties): app + Fluent Bit Firelens sidecar.
-  Traces  -> Micrometer Tracing -> OTLP/HTTP :4318/v1/traces  -> Tempo  [WORKING]
-  Metrics -> Micrometer OTLP   -> OTLP/HTTP :4318/v1/metrics -> Mimir  [WORKING]
-  Logs    -> stdout -> Firelens (aws-for-fluent-bit:init-3.2.4) -> OTLP/HTTP :4318/v1/logs -> Loki
-             [FIXED: service_name set correctly via record_modifier + logs_body_key_attributes]
-
-  FIX based on R&D team pattern (notification-manager-dynamic-routed):
-    Uses aws-for-fluent-bit:init-3.2.4 image which downloads custom Fluent Bit config
-    from S3 at startup (aws_fluent_bit_init_s3_1 env var). The config uses:
-      - record_modifier filter: adds service_name, openapm_product_name, region as record fields
-      - logs_body_key_attributes true: promotes those fields to OTLP log attributes
-      - OpenAPM collector reads log attributes -> maps service_name to Loki label
-    The init-variant S3 download works on Fargate (container-level, not ECS-level).
+  Java Batch + Firelens (Brian's approach). Multi-container: app + Fluent Bit sidecar.
+  Uses aws-for-fluent-bit:init-3.2.4 with S3 custom config (record_modifier +
+  logs_body_key_attributes) to set service_name correctly in Loki.
+  Pattern from R&D team (notification-manager-dynamic-routed).
+  Traces/Metrics via Micrometer direct OTLP. Logs via Firelens -> OTLP -> Loki.
 
 Parameters:
   EnvironmentName:
