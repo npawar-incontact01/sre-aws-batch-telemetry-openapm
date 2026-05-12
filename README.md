@@ -1,127 +1,170 @@
-# sre-aws-batch-telemetry — Brian's Approach: Java + Firelens
+# sre-aws-batch-telemetry — OpenAPM POC for AWS Batch Jobs
 
-> **Branch:** `poc/java-firelens-brian-approach`
-> This branch implements Architect Brian's recommended approach: **Micrometer for traces/metrics + Firelens sidecar for log routing**, consistent with how regular ECS microservices work at NICE.
->
-> | Signal | Status | Notes |
-> |--------|--------|-------|
-> | Traces | ✅ Working | Micrometer Tracing → Tempo |
-> | Metrics | ✅ Working | Micrometer OTLP Registry → Mimir |
-> | Logs | ⚠️ Reaches Loki | `service_name=unknown_service` — see [Evidence Doc](docs/FIRELENS-EVIDENCE.md) |
->
-> See also: [`poc/java-aws-batch`](../../tree/poc/java-aws-batch) (working fix), [`poc/python-aws-batch`](../../tree/poc/python-aws-batch)
-
-## Brian's Recommended Architecture
-
-```
-AWS Batch Fargate Task (Multi-container — 2025 Firelens support)
-├── App container (amazoncorretto:17)
-│     ├── Micrometer Tracing → OTLP/HTTP :4318/v1/traces  → Tempo  ✅
-│     ├── Micrometer OTLP    → OTLP/HTTP :4318/v1/metrics → Mimir  ✅
-│     └── stdout (JSON logs) → Firelens sidecar
-│
-└── log_router sidecar (aws-for-fluent-bit:3.3.0)
-      └── opentelemetry plugin → OTLP/HTTP :4318/v1/logs → Loki  ⚠️
-            Logs REACH Loki but appear under service_name="unknown_service"
-```
-
-The solution uses **Micrometer Tracing + OTel bridge** for traces/metrics and a manually configured `SdkLoggerProvider` for logs — no Firelens, no ECR push required.
+> **Repository:** `sre-aws-batch-telemetry-openapm`  
+> **Team:** SRE | **Account:** mon-sandbox (`723346695882`) | **Region:** `us-west-2`
 
 ---
 
-## Architecture
+## Table of Contents
+
+1. [Why We Did This](#1-why-we-did-this)
+2. [What We Built](#2-what-we-built)
+3. [Branches Overview](#3-branches-overview)
+4. [Architecture](#4-architecture)
+5. [How We Built It](#5-how-we-built-it)
+6. [End Results](#6-end-results)
+7. [Problems We Faced](#7-problems-we-faced)
+8. [What Is Still Pending](#8-what-is-still-pending)
+9. [Brian's Firelens Approach — Evidence](#9-brians-firelens-approach--evidence)
+10. [Infrastructure Deployed](#10-infrastructure-deployed)
+11. [Consumer Onboarding](#11-consumer-onboarding)
+12. [Repository Structure](#12-repository-structure)
+
+---
+
+## 1. Why We Did This
+
+### Background
+
+AWS Batch jobs are used across multiple teams at NICE for running background workloads (data pipelines, reporting, scheduled processing). Until this POC, there was **no standard mechanism** to send observability signals (traces, metrics, logs) from Batch jobs into **OpenAPM** (NICE's central Grafana platform backed by Tempo, Mimir, Loki).
+
+Without telemetry:
+- No distributed tracing for batch job phases (fetch / process / write)
+- No metrics for job duration, items processed, or success/failure rates
+- No structured logs correlated to trace IDs in Grafana Explore
+- Engineers debugging failures are limited to CloudWatch raw logs with no context
+
+### Goal
+
+Prove that a **Java Spring Boot AWS Batch job on Fargate** (and a Python equivalent) can send all three OpenTelemetry signals — **traces, metrics, and logs** — to OpenAPM with the correct `service_name` labels, without needing ECR image push or a sidecar.
+
+### Constraints We Had to Work Around
+
+| Constraint | Detail |
+|---|---|
+| No ECR access | Org IAM policy has explicit deny on `ecr:GetAuthorizationToken` in mon-sandbox |
+| MFA required locally | All AWS CLI deploys had to go through AWS CloudShell |
+| OpenAPM port 4318 only | gRPC (port 4317) returns `UNAVAILABLE` through the VPC Endpoint |
+| No custom Firelens config | S3-sourced Fluent Bit configs are blocked on Fargate (ECS-only feature) |
+| VPC Endpoint SG | Initially had no inbound rules — blocked all OTLP traffic |
+
+---
+
+## 2. What We Built
+
+Three proof-of-concept implementations across three Git branches:
+
+| Branch | Language | Approach | All 3 Signals Correct? |
+|---|---|---|---|
+| `poc/python-aws-batch` | Python 3.11 | OTel SDK direct OTLP/HTTP | ✅ Yes |
+| `poc/java-aws-batch` | Java 17 / Spring Boot 3.3 | Micrometer + OTel Logback Appender | ✅ Yes |
+| `poc/java-firelens-brian-approach` | Java 17 / Spring Boot 3.3 | Micrometer + Firelens sidecar | ⚠️ Logs arrive with wrong `service_name` |
+
+The **working solution** is `poc/java-aws-batch`. The Firelens branch provides evidence for the architectural discussion with Architect Brian.
+
+---
+
+## 3. Branches Overview
+
+### `poc/python-aws-batch`
+
+Python 3.11 batch job using the OpenTelemetry Python SDK. All 3 signals sent directly via OTLP/HTTP. Code fetched from S3 at runtime — no ECR needed. Includes a reusable `batch_otel` library.  
+See [docs/PYTHON-POC-SUMMARY.md](docs/PYTHON-POC-SUMMARY.md).
+
+### `poc/java-aws-batch` — Working Solution ✅
+
+Java Spring Boot 3.3.13 batch job:
+- **Traces** via Micrometer Tracing (OTel bridge) → Tempo ✅
+- **Metrics** via Micrometer OTLP Registry → Mimir ✅
+- **Logs** via OTel Logback Appender + custom `SdkLoggerProvider` → Loki ✅
+
+Fat JAR built locally, uploaded to S3. No ECR push. No sidecar.  
+See [docs/JAVA-POC-SUMMARY.md](docs/JAVA-POC-SUMMARY.md).
+
+### `poc/java-firelens-brian-approach` — Evidence for Brian ⚠️
+
+Implements Architect Brian's recommended approach: **Firelens sidecar for log routing**, same pattern as ECS microservices. Multi-container Batch task (app + Fluent Bit sidecar). Logs reach Loki but `service_name=unknown_service`.  
+See [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md).
+
+---
+
+## 4. Architecture
+
+### Working Solution (`poc/java-aws-batch`)
 
 ```
-AWS Batch Fargate Task
+AWS Batch Fargate Task (1 vCPU / 2048 MiB)
 └── Java container (amazoncorretto:17)
-    ├── Downloads batch-telemetry.jar from S3 at startup
+    │
+    ├── Entrypoint: aws s3 cp .../batch-telemetry.jar → java -jar /app.jar
+    │
+    ├── Spring Boot 3.3.13 (CommandLineRunner — no web server)
     │
     ├── Micrometer Tracing (OTel bridge)
-    │     → OTLPSpanExporter  → /v1/traces  → Tempo
+    │     └── BatchSpanProcessor → OTLPSpanExporter
+    │           → OTLP/HTTP :4318/v1/traces → VPC Endpoint → Tempo ✅
     │
-    ├── Micrometer OTLP Registry
-    │     → OTLPMetricExporter → /v1/metrics → Mimir
+    ├── Micrometer OTLP Registry (push every 10s)
+    │     └── OTLPMetricExporter
+    │           → OTLP/HTTP :4318/v1/metrics → VPC Endpoint → Mimir ✅
     │
-    └── Logback + OTel Appender (custom SdkLoggerProvider)
-          → OtlpHttpLogRecordExporter → /v1/logs → Loki
-                                          │
-                                VPC Endpoint (PrivateLink)
+    └── Logback + OpenTelemetryAppender
+          └── custom SdkLoggerProvider (built from OTEL_* env vars)
+                → OtlpHttpLogRecordExporter
+                      → OTLP/HTTP :4318/v1/logs → VPC Endpoint → Loki ✅
 ```
 
-| Signal  | Library | Exporter | Backend |
-|---------|---------|----------|---------|
-| Traces  | `micrometer-tracing-bridge-otel` | `opentelemetry-exporter-otlp` | Tempo |
-| Metrics | `micrometer-registry-otlp` | OTLP push registry | Mimir |
-| Logs    | `opentelemetry-logback-appender-1.0` | `OtlpHttpLogRecordExporter` | Loki |
-
----
-
-## Repository Structure (Java POC)
+### Brian's Firelens Approach (`poc/java-firelens-brian-approach`)
 
 ```
-java-poc/
-  pom.xml                            # Spring Boot 3.3.13, Java 17
-  src/main/java/com/nice/sre/batch/
-    BatchTelemetryApplication.java   # Main job: traces + metrics + log wiring
-  src/main/resources/
-    application.yml                  # Micrometer config (traces + metrics)
-    logback-spring.xml               # CONSOLE + OpenTelemetryAppender
-cloudformation/
-  batch-job-definition-java.yaml     # Job definition (1 vCPU / 2048 MB, awslogs)
-  iam-roles.yaml
-  batch-compute-environment.yaml
-  batch-job-queue.yaml
-scripts/
-  build-and-deploy-java.sh
-docs/
-  JAVA-POC-SUMMARY.md               # Full POC story
+AWS Batch Fargate Task (1 vCPU / 2048 MiB total)
+├── app container (0.75 vCPU / 1920 MiB)
+│     ├── Micrometer Tracing → OTLP :4318/v1/traces → Tempo ✅
+│     ├── Micrometer OTLP   → OTLP :4318/v1/metrics → Mimir ✅
+│     └── stdout (JSON logs) ──────────────────────┐
+│                                                   ↓
+└── log_router sidecar (0.25 vCPU / 128 MiB)  [aws-for-fluent-bit:3.3.0]
+      └── opentelemetry plugin → OTLP :4318/v1/logs → Loki
+            ⚠️  Logs arrive but service_name="unknown_service"
 ```
 
 ---
 
-## Quick Start
+## 5. How We Built It
 
-### Prerequisites
+### Step 1 — Infrastructure via CloudFormation
 
-- Java 17, Maven 3.x
-- AWS CLI configured with `mon-sandbox` profile (MFA-enabled, use CloudShell for deploy)
-- Access to `s3://sre-batch-telemetry-code-723346695882`
-
-### 1. Build the JAR
+Deployed in sequence from CloudShell (`mon-sandbox` profile, MFA):
 
 ```bash
-cd java-poc
-mvn clean package -DskipTests
-# Output: target/batch-telemetry.jar (~23 MB)
+# IAM roles
+aws cloudformation deploy --stack-name sre-batch-iam-dev \
+  --template-file cloudformation/iam-roles.yaml --capabilities CAPABILITY_NAMED_IAM
+
+# Security group (TCP 4317, 4318, 443 open to VPC CIDR 10.0.0.0/21)
+aws cloudformation deploy --stack-name sre-batch-sg-dev \
+  --template-file cloudformation/security-groups.yaml
+
+# Compute environment + job queue
+aws cloudformation deploy --stack-name sre-batch-ce-dev \
+  --template-file cloudformation/batch-compute-environment.yaml
+aws cloudformation deploy --stack-name sre-batch-jq-dev \
+  --template-file cloudformation/batch-job-queue.yaml
+
+# Java job definition
+aws cloudformation deploy --stack-name sre-batch-java-dev-jobdef \
+  --template-file cloudformation/batch-job-definition-java.yaml \
+  --parameter-overrides ExecutionRoleArn=... JobRoleArn=...
 ```
 
-### 2. Upload to S3 and submit (via CloudShell)
+**Key infrastructure fix:** The shared VPC Endpoint Security Group had no inbound rules. Added TCP 4317, 4318, 443 inbound from VPC CIDR `10.0.0.0/21`.
 
-```bash
-# In CloudShell: Actions → Upload file → batch-telemetry.jar
-aws s3 cp ~/batch-telemetry.jar \
-  s3://sre-batch-telemetry-code-723346695882/java/batch-telemetry.jar \
-  --region us-west-2
+### Step 2 — Java Application
 
-aws batch submit-job \
-  --job-name my-java-batch-job \
-  --job-queue sre-aws-batch-telemetry-dev-queue \
-  --job-definition sre-batch-telemetry-java-dev-job \
-  --region us-west-2
-```
-
-### 3. View telemetry in Grafana
-
-- **Traces** → Tempo → `service.name = sre-batch-telemetry-java`
-- **Metrics** → Mimir → `{service_name="sre-batch-telemetry-java"}`
-- **Logs** → Loki → `{service_name="sre-batch-telemetry-java"}`
-
----
-
-## Key Dependencies (pom.xml)
+**pom.xml key dependencies:**
 
 ```xml
-<!-- Traces: Micrometer → OTel bridge → OTLP/HTTP → Tempo -->
+<!-- opentelemetry-bom:1.39.0 manages versions -->
 <dependency>
     <groupId>io.micrometer</groupId>
     <artifactId>micrometer-tracing-bridge-otel</artifactId>
@@ -130,336 +173,497 @@ aws batch submit-job \
     <groupId>io.opentelemetry</groupId>
     <artifactId>opentelemetry-exporter-otlp</artifactId>
 </dependency>
-
-<!-- Metrics: OTLP push registry → Mimir -->
 <dependency>
     <groupId>io.micrometer</groupId>
     <artifactId>micrometer-registry-otlp</artifactId>
 </dependency>
-
-<!-- Logs: logback OTel appender → /v1/logs → Loki -->
 <dependency>
     <groupId>io.opentelemetry.instrumentation</groupId>
     <artifactId>opentelemetry-logback-appender-1.0</artifactId>
     <version>2.4.0-alpha</version>
 </dependency>
+<!-- CVE fix: CVE-2024-7254 -->
+<dependency>
+    <groupId>com.google.protobuf</groupId>
+    <artifactId>protobuf-java</artifactId>
+    <version>3.25.5</version>
+</dependency>
+```
+
+**Critical log wiring** — Spring Boot 3.3's `OpenTelemetry` bean has no `SdkLoggerProvider`, so we build one from env vars:
+
+```java
+private static SdkLoggerProvider buildLoggerProvider() {
+    String endpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
+    String serviceName = System.getenv("OTEL_SERVICE_NAME");
+    // parse OTEL_RESOURCE_ATTRIBUTES into Resource attributes
+    Resource resource = Resource.getDefault().merge(
+        Resource.create(Attributes.of(
+            AttributeKey.stringKey("service.name"), serviceName,
+            AttributeKey.stringKey("service_name"), serviceName,
+            // ... environment, region, account.id, openapm_product_name
+        ))
+    );
+    OtlpHttpLogRecordExporter exporter = OtlpHttpLogRecordExporter.builder()
+        .setEndpoint(endpoint + "/v1/logs")
+        .build();
+    return SdkLoggerProvider.builder()
+        .setResource(resource)
+        .addLogRecordProcessor(BatchLogRecordProcessor.builder(exporter).build())
+        .build();
+}
+
+// In constructor — install BEFORE Spring context starts logging
+OpenTelemetryAppender.install(
+    OpenTelemetrySdk.builder().setLoggerProvider(buildLoggerProvider()).build()
+);
+```
+
+### Step 3 — Build and Deploy
+
+```bash
+# Local — build fat JAR
+cd java-poc && mvn clean package -DskipTests
+# → target/batch-telemetry.jar (~23 MB)
+
+# CloudShell — upload via Actions → Upload file, then:
+aws s3 cp ~/batch-telemetry.jar \
+  s3://sre-batch-telemetry-code-723346695882/java/batch-telemetry.jar \
+  --region us-west-2
+
+# Submit job
+aws batch submit-job \
+  --job-name sre-batch-java-test \
+  --job-queue sre-aws-batch-telemetry-dev-queue \
+  --job-definition sre-batch-telemetry-java-dev-job \
+  --region us-west-2
 ```
 
 ---
 
-## Environment Variables (set in job definition)
+## 6. End Results
 
-| Variable | Value | Purpose |
-|---|---|---|
-| `OTEL_SERVICE_NAME` | `sre-batch-telemetry-java` | Service name across all signals |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318` | OpenAPM endpoint |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Forces HTTP over gRPC |
-| `OTEL_RESOURCE_ATTRIBUTES` | `environment=mon-sandbox,account.id=...,service_name=...,region=us-west-2` | Loki labels |
+### Java POC (`poc/java-aws-batch`) — All 3 Signals Confirmed ✅
+
+| Signal | Grafana Backend | Grafana Query | Status |
+|--------|----------------|--------------|--------|
+| Traces | Tempo | `{service.name="sre-batch-telemetry-java"}` | ✅ Correct label |
+| Metrics | Mimir | `{service_name="sre-batch-telemetry-java"}` | ✅ Correct label |
+| Logs | Loki | `{service_name="sre-batch-telemetry-java"}` | ✅ Correct label |
+
+**Traces:** 4 spans per job run with full parent-child hierarchy:
+```
+batch-job-execution  (root, ~60s)
+  ├── fetch-data      (~5s)
+  ├── process-data    (~5s)
+  └── write-results   (~5s)
+```
+Span tags: `job.items_processed`, `job.status`, `data.count`, `data.processed`, `data.written`.
+
+**Logs:** Each log line carries `traceId` + `spanId` (MDC from Micrometer) — enables one-click drill-down from a Tempo trace to the matching Loki log line in Grafana Explore. Also carries `code_filepath`, `code_function`, `code_lineno`.
+
+**Metrics pushed every 10s:**
+- `job_duration_seconds`
+- `job_items_processed_total`
+- `job_status` (0=success, 1=error)
+
+**Confirmed job:** `a0dd88f9` — SUCCEEDED. All 3 signals visible in Grafana with `service_name=sre-batch-telemetry-java`.
 
 ---
 
-## Infrastructure
+### Python POC (`poc/python-aws-batch`) — All 3 Signals Confirmed ✅
 
-| Resource | Value |
+Python 3.11, OTel SDK. Code fetched from S3 at runtime. All signals reach OpenAPM with correct labels.
+
+**Confirmed job:** `677348fb` — SUCCEEDED.
+
+---
+
+### Brian's Firelens Approach (`poc/java-firelens-brian-approach`) — Evidence ⚠️
+
+| Signal | Result |
+|--------|--------|
+| Traces | ✅ Correct (`service.name=sre-batch-telemetry-java`) |
+| Metrics | ✅ Correct (`service_name=sre-batch-telemetry-java`) |
+| Logs | ⚠️ Reach Loki but `service_name=unknown_service` |
+
+**Confirmed job:** `464469c5` — SUCCEEDED. Logs visible in Loki under `{service_name="unknown_service"}`.
+
+---
+
+## 7. Problems We Faced
+
+### Problem 1 — VPC Endpoint Security Group Had No Inbound Rules
+
+**Symptom:** All OTLP exports timed out. Job completed but zero telemetry in Grafana.
+
+**Root cause:** VPC Endpoint SG had no inbound rules. Batch tasks in the VPC could not reach port 4318 of the endpoint.
+
+**Fix:** Added inbound TCP 4317, 4318, 443 from VPC CIDR `10.0.0.0/21` to the VPC Endpoint security group.
+
+---
+
+### Problem 2 — gRPC (Port 4317) Does Not Work Through VPC Endpoint
+
+**Symptom:** With `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`, exporter returned `UNAVAILABLE`.
+
+**Root cause:** The VPC Endpoint is HTTP-only. gRPC uses HTTP/2 framing that is not supported through this endpoint.
+
+**Fix:** Switched to `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` on port 4318. All 3 signals work.
+
+---
+
+### Problem 3 — Logs Showing `service_name=unknown_service` (Attempt 1)
+
+**Symptom:** Traces and metrics had correct label; logs appeared under `unknown_service`.
+
+**Root cause:** `OpenTelemetryAppender` by default uses `GlobalOpenTelemetry`, which resolves to a no-op when no SDK is installed. Logs were silently dropped or sent without resource attributes.
+
+**Attempted fix:** Called `OpenTelemetryAppender.install(springOpenTelemetryBean)`.
+
+---
+
+### Problem 4 — Logs Still `service_name=unknown_service` After Spring Bean Install (Attempt 2)
+
+**Symptom:** Even after `install(springOpenTelemetryBean)`, logs arrived in Loki with `unknown_service`.
+
+**Root cause (Spring Boot 3.3 specific):** Spring Boot 3.3's auto-configured `OpenTelemetry` bean is built for Micrometer Tracing only. Its internal `SdkLoggerProvider` is a **no-op** — it silently drops log records.
+
+**Fix (final — on `poc/java-aws-batch`):** Built a dedicated `SdkLoggerProvider` directly from `OTEL_*` environment variables using the OTel Java SDK, bypassing the Spring bean entirely. See `BatchTelemetryApplication.buildLoggerProvider()`.
+
+---
+
+### Problem 5 — Firelens `service_name=unknown_service` (Hard Architectural Blocker)
+
+**Symptom:** On Firelens branch, logs arrive in Loki with `service_name=unknown_service` regardless of configuration.
+
+**Root cause:** The OpenAPM OTel Collector maps the OTLP **resource attribute** `service.name` → Loki stream label `service_name`. Firelens sends app stdout as raw OTLP log records with **empty resource attributes**. The `add_label` ECS option only adds an HTTP-level Loki stream label — the Collector ignores it when building `service_name`.
+
+**What we tried:**
+
+| Attempt | Result |
 |---|---|
-| AWS Account | `723346695882` (mon-sandbox) |
-| Region | `us-west-2` |
-| Job Queue | `sre-aws-batch-telemetry-dev-queue` |
-| Job Definition | `sre-batch-telemetry-java-dev-job` |
-| CF Stack | `sre-batch-java-dev-jobdef` |
-| S3 JAR path | `s3://sre-batch-telemetry-code-723346695882/java/batch-telemetry.jar` |
-| CloudWatch logs | `/aws/batch/sre-batch-telemetry-java/app` |
-| Execution Role | `sre-aws-batch-telemetry-dev-execution-role` |
-| Job Role | `sre-aws-batch-telemetry-dev-job-role` |
+| `add_label: "service.name sre-batch-telemetry-java"` | Rejected by ECS (dot in key name breaks ECS JSON options) |
+| `add_label: "service_name sre-batch-telemetry-java"` | Sets HTTP stream label, not OTLP resource attr — collector ignores it |
+| `OTEL_SERVICE_NAME` env var on app container | Only affects traces/metrics; Firelens sidecar has no access to app env vars |
+| Custom Fluent Bit config with `record_modifier` filter | Blocked on Fargate — S3 config source is ECS-only feature |
+| `aws-for-fluent-bit:stable` image | Ships Fluent Bit 1.9.x — opentelemetry plugin has no log support (metrics only) |
+
+**Cannot be fixed with Firelens alone.** Would require either custom Fluent Bit config (Fargate-blocked) or OpenAPM Collector pipeline changes.
 
 ---
 
-## Related
+### Problem 6 — CloudFormation Deployment Failures (Firelens Stack)
 
-- [Python POC branch](../../tree/poc/python-aws-batch) — Python OTel SDK version
-- [Docs: Java POC Summary](docs/JAVA-POC-SUMMARY.md)
+Multiple errors during CF deployment of the Firelens job definition stack:
 
+| Error | Root Cause | Fix Applied |
+|---|---|---|
+| `EarlyValidation::ResourceExistenceCheck` | `/aws/batch/.../app` log group already exists in another stack | Removed both log group resources from the template — CloudWatch auto-creates them |
+| `Unresolved resource dependencies [FirelensLogGroup]` | Outputs block still referenced the deleted resource | Replaced `!Ref FirelensLogGroup` with literal string in Outputs |
+| `Fargate resource requirements (1.25 vCPU) not valid` | app (1 vCPU) + sidecar (0.25 vCPU) = 1.25 total — not a valid Fargate size | Set app to 0.75 vCPU + 1920 MiB → total = exactly 1 vCPU / 2048 MiB |
+| `!Sub` not evaluated by EarlyValidation hook | CF EarlyValidation does not resolve intrinsic functions | Hardcoded log group name as literal string |
+| GitHub CDN cache | `curl` from raw.githubusercontent.com served stale template | Used CloudShell file upload button to bypass CDN |
 
 ---
 
-## Summary of What Was Done
+### Problem 7 — ECR Access Blocked
 
-### Problem Statement
+**Symptom:** Could not push custom Docker images.
 
-- Multiple consumers use AWS Batch for their applications
-- No existing mechanism to send telemetry (traces, metrics, logs) from Batch jobs to OpenAPM
-- AWS Batch previously lacked sidecar/Firelens support (resolved April 2025)
-- ECR push is blocked by org policy in mon-sandbox — needed alternative approach
+**Root cause:** Org IAM policy has explicit deny on `ecr:GetAuthorizationToken`.
 
-### Solution Implemented
+**Fix:** Used public ECR images (`public.ecr.aws/amazoncorretto/amazoncorretto:17`) and fetched the JAR from S3 at container startup via `aws s3 cp`. No custom image or ECR access needed.
 
-All 3 telemetry signals are exported directly from the application via **OTLP/HTTP** to the OpenAPM endpoint through a **VPC Endpoint (PrivateLink)** — no sidecars or Firelens required.
+---
 
-| Signal | Protocol | Endpoint Path | Grafana Backend |
-|--------|----------|---------------|-----------------|
-| **Traces** | OTLP/HTTP | `:4318/v1/traces` | Tempo |
-| **Metrics** | OTLP/HTTP | `:4318/v1/metrics` | Mimir |
-| **Logs** | OTLP/HTTP | `:4318/v1/logs` | Loki |
+## 8. What Is Still Pending
 
-### Architecture
+### 8.1 Firelens Evidence — Grafana Validation
 
-```mermaid
-graph LR
-    subgraph mon-sandbox ["AWS Account: mon-sandbox (723346695882)"]
-        subgraph batch ["AWS Batch (Fargate)"]
-            APP["App Container<br/>Python + OTel SDK<br/>batch_otel library"]
-        end
-        S3["S3 Bucket<br/>sre-batch-telemetry-code-*<br/>(code + requirements)"]
-        CW["CloudWatch Logs<br/>(fallback/debug)"]
-        VPCE["VPC Endpoint<br/>vpce-07577bcf5fb4edc78<br/>(PrivateLink)"]
-    end
+**Job `464469c5-9d2a-4822-b421-7dd16ad4f969`** was submitted. Next step:
+1. Confirm status: `aws batch describe-jobs --jobs 464469c5-... --region us-west-2`
+2. Open Grafana Loki → query `{service_name="unknown_service"}` with time range during job run
+3. Capture screenshot for Brian showing logs arrive but with wrong label
 
-    subgraph openapm ["OpenAPM"]
-        TEMPO["Tempo<br/>(Traces)"]
-        MIMIR["Mimir<br/>(Metrics)"]
-        LOKI["Loki<br/>(Logs)"]
-    end
+### 8.2 Architecture Decision with Brian
 
-    subgraph grafana ["Grafana"]
-        G["Dashboards & Explore"]
-    end
+Three paths forward for log routing in Batch jobs. Brian's input is needed:
 
-    S3 -->|"fetch code at runtime"| APP
-    APP -->|"stdout/stderr"| CW
-    APP -->|"OTLP/HTTP :4318<br/>/v1/traces"| VPCE
-    APP -->|"OTLP/HTTP :4318<br/>/v1/metrics"| VPCE
-    APP -->|"OTLP/HTTP :4318<br/>/v1/logs"| VPCE
-    VPCE -->|PrivateLink| TEMPO
-    VPCE -->|PrivateLink| MIMIR
-    VPCE -->|PrivateLink| LOKI
-    TEMPO --> G
-    MIMIR --> G
-    LOKI --> G
+| Path | Description | `service_name` correct? | ECS Consistent? | Complexity |
+|---|---|---|---|---|
+| **A — Current** | OTel Logback appender → OTLP/HTTP direct | ✅ Yes | ❌ App-level change per service | Low |
+| **B — OTel Collector sidecar** | Replace Firelens with `otel/opentelemetry-collector-contrib` sidecar | ✅ Yes | Partial | Medium |
+| **C — Firelens (Brian's)** | Cannot produce correct `service_name` without collector changes | ❌ No | ✅ Yes | Blocked |
+
+Path A is implemented and confirmed working on `poc/java-aws-batch`.
+
+### 8.3 Python Library Packaging
+
+`src/batch_otel/` is a working prototype. Still pending:
+- Publish to internal PyPI / NICE artifact registry
+- Add `pyproject.toml` and packaging metadata
+- Add pip install instructions for consumers
+
+### 8.4 Consumer CloudFormation Template
+
+`cloudformation/consumer-job-definition.yaml` needs:
+- Validation on AllowedValues for container image options
+- Integration with VPC/subnet exports from shared master stacks
+- IAM policy review for minimum required permissions per consumer job
+
+### 8.5 Grafana Dashboard
+
+No dashboard created yet:
+- Custom dashboard for batch job metrics (`job_duration_seconds`, `job_items_processed_total`, `job_status`)
+- Alert rule: `job_status=1` (failure)
+- Correlation panel: trace + logs side by side in Grafana Explore
+
+### 8.6 Multi-Region Validation
+
+All testing done in `us-west-2` only. If Batch jobs run in other regions, the VPC Endpoint and OpenAPM endpoint configuration must be validated per region.
+
+---
+
+## 9. Brian's Firelens Approach — Evidence
+
+Full evidence: [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md)
+
+### What Works
+
+| Signal | Status | Notes |
+|--------|--------|-------|
+| Traces | ✅ Working | Micrometer direct OTLP — no Firelens involved |
+| Metrics | ✅ Working | Micrometer direct OTLP — no Firelens involved |
+| Logs delivery | ✅ Reach Loki | HTTP 200 from OTLP collector confirmed |
+| Logs label | ❌ Wrong | `service_name=unknown_service` |
+
+### Why It Fails
+
+The OpenAPM OTel Collector maps OTLP resource attribute `service.name` → Loki stream label `service_name`:
+
+```
+OTLP log record (from Firelens)
+  resourceLogs.resource.attributes = {}   ← EMPTY — Firelens sets no resource attrs
+  HTTP label: service_name=...            ← Collector ignores HTTP labels for service_name mapping
+  Result: collector fallback → service_name="unknown_service"
 ```
 
+### Critical Fluent Bit Version Discovery
+
+`aws-for-fluent-bit:stable` ships **Fluent Bit 1.9.x** which has **no log support** in the `opentelemetry` output plugin — logs are silently dropped.
+
+| Image | Fluent Bit version | Log support |
+|---|---|---|
+| `:stable` | 1.9.10 | ❌ Metrics only |
+| `:3.3.0` | 5.0.3 | ✅ Logs work — but wrong label |
+
+### Comparison: Firelens vs Direct OTLP
+
+| | Brian's Firelens | Working Solution (Direct OTLP) |
+|---|---|---|
+| `service_name` label | ❌ `unknown_service` | ✅ `sre-batch-telemetry-java` |
+| Trace-log correlation | ❌ No trace context | ✅ `traceId` + `spanId` in every log |
+| ECS pattern consistency | ✅ Same as ECS microservices | ❌ App-level change required |
+| Multi-container overhead | ❌ Extra sidecar container | ✅ Single container |
+| Custom config (Fargate) | ❌ Blocked | N/A |
+
 ---
 
-## Infrastructure Deployed (mon-sandbox)
+## 10. Infrastructure Deployed
 
-| Component | Resource | Details |
-|-----------|----------|---------|
-| **IAM Roles** | `sre-aws-batch-telemetry-dev-iam` | Execution role + Job role (S3 read, CW logs) |
-| **Security Group** | `sg-0cf31b827483e31fc` | Egress: 4317, 4318, 3100, 443. Ingress: 4317, 4318, 443 from VPC CIDR |
-| **Compute Environment** | `sre-aws-batch-telemetry-dev-ce` | Fargate, MaxvCpus=16 |
-| **Job Queue** | `sre-aws-batch-telemetry-dev-queue` | Priority 1 |
-| **Job Definition** | `sre-aws-batch-telemetry-dev-jobdef` | Fargate 0.25 vCPU / 512 MiB, timeout 600s |
-| **VPC Endpoint** | `vpce-07577bcf5fb4edc78` | Interface endpoint for OpenAPM PrivateLink, private DNS enabled |
-| **S3 Bucket** | `sre-batch-telemetry-code-723346695882` | Stores batch_job.py + requirements.txt |
-| **CloudWatch Log Group** | `/aws/batch/sre-aws-batch-telemetry` | Job execution logs |
+### AWS Resources
 
-### Network Details
+| Resource | Name | CloudFormation Stack |
+|---|---|---|
+| IAM Execution Role | `sre-aws-batch-telemetry-dev-execution-role` | `sre-batch-iam-dev` |
+| IAM Job Role | `sre-aws-batch-telemetry-dev-job-role` | `sre-batch-iam-dev` |
+| Security Group | `sg-0cf31b827483e31fc` | `sre-batch-sg-dev` |
+| Compute Environment | `sre-aws-batch-telemetry-dev-ce` | `sre-batch-ce-dev` |
+| Job Queue | `sre-aws-batch-telemetry-dev-queue` | `sre-batch-jq-dev` |
+| Job Definition (Java) | `sre-batch-telemetry-java-dev-job` | `sre-batch-java-dev-jobdef` |
+| Job Definition (Firelens) | `sre-batch-telemetry-java-dev-firelens-job` | `sre-batch-java-firelens-jobdef` |
+| S3 Bucket | `sre-batch-telemetry-code-723346695882` | (pre-existing) |
+| CloudWatch Log Group | `/aws/batch/sre-batch-telemetry-java/app` | `sre-batch-java-dev-jobdef` |
+| VPC Endpoint | `vpce-07577bcf5fb4edc78` | (pre-existing, shared) |
+
+### Network
 
 | Item | Value |
-|------|-------|
-| VPC | `vpc-0693b34275513631c` (shared_eks, 10.0.0.0/21) |
+|---|---|
+| VPC | `vpc-0693b34275513631c` (`shared_eks`, 10.0.0.0/21) |
 | Subnets | `subnet-0cdc843ec821d3ea5` (2a), `subnet-071fb611b8b3abf42` (2b), `subnet-00c9a34807a6d3742` (2c) |
-| OpenAPM Endpoint | `apm-na1.mon-sandbox.nicecxone-sbx.com:4318` |
-| PrivateLink Service | `com.amazonaws.vpce.us-west-2.vpce-svc-0ec7218c048c7951c` |
-| VPC Endpoint IPs | 10.0.5.202, 10.0.1.197, 10.0.2.198 |
+| OpenAPM Endpoint | `https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318` |
+| Protocol | OTLP/HTTP (`http/protobuf`) — port 4318 only |
+
+### Environment Variables (Java Job Definition)
+
+| Variable | Value |
+|---|---|
+| `OTEL_SERVICE_NAME` | `sre-batch-telemetry-java` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-batch-telemetry-java,region=us-west-2` |
 
 ---
 
-## Key Decisions & Findings
+## 11. Consumer Onboarding
 
-### ECR Not Available
-- Org policy has explicit deny on `ecr:GetAuthorizationToken`
-- **Workaround:** Use public Python image (`public.ecr.aws/docker/library/python:3.11-slim`) + fetch code from S3 at runtime
+### Java Consumers
 
-### Protocol Choice: OTLP/HTTP on Port 4318
-- gRPC (port 4317) — TCP open, TLS works, but gRPC returns `UNAVAILABLE` (protocol mismatch through VPC Endpoint)
-- HTTP (port 4318) — Works correctly for all 3 signals
-- Port 4318 `/v1/traces` returns `415` with wrong Content-Type → confirms endpoint accepts OTLP protobuf
-- Port 4318 `/v1/logs` returns `400` with invalid data → confirms Loki accepts OTLP log format
+1. Add dependencies from `java-poc/pom.xml` (use `opentelemetry-bom:1.39.0`)
+2. Copy `buildLoggerProvider()` from `BatchTelemetryApplication.java`
+3. Call `OpenTelemetryAppender.install(...)` at startup
+4. Deploy using `cloudformation/batch-job-definition-java.yaml` as template
+5. Set the 4 required environment variables in your job definition
 
-### No Firelens Needed
-- Tested Loki native ports (3100, 3200) — CLOSED through VPC Endpoint
-- All 3 signals go through the same port 4318 with OTLP/HTTP
-- Simpler architecture: direct export from app, no sidecars
-
-### Security Group Fix
-- VPC Endpoint SG initially had NO inbound rules
-- Added inbound TCP 4317, 4318, 443 from VPC CIDR `10.0.0.0/21`
-- This was the root cause of initial connection timeouts
-
-### Required Grafana Labels
-| Label | Value | Purpose |
-|-------|-------|---------|
-| `openapm_product_name` | `sre-batch-telemetry` | Grafana product filter |
-| `service_name` | `sre-aws-batch-telemetry` | Grafana service filter |
-| `environment` | `mon-sandbox` | Environment label |
-| `region` | `us-west-2` | AWS region |
-| `account.id` | `723346695882` | Account identifier |
-
----
-
-## How Consumers Onboard (Generic Solution)
-
-### Option 1: Use the `batch_otel` library (recommended)
+### Python Consumers
 
 ```python
 from batch_otel import init_telemetry, shutdown_telemetry
 
 def main():
-    otel = init_telemetry()  # reads config from env vars
+    otel = init_telemetry()  # reads OTEL_* env vars automatically
 
     with otel.tracer.start_as_current_span("my-job"):
-        otel.logger.info("Starting processing")
-        # ... your existing job code ...
-        otel.logger.info("Done")
+        otel.logger.info("Processing started")
+        # ... your job logic ...
+        otel.logger.info("Processing complete")
 
-    shutdown_telemetry(otel)  # flushes all telemetry before exit
+    shutdown_telemetry(otel)  # flushes all signals before exit
+
+if __name__ == "__main__":
+    main()
 ```
 
-### Option 2: Direct OTel SDK integration
-
-```python
-# Set these env vars in your job definition:
-# OTEL_SERVICE_NAME=my-app
-# OTEL_EXPORTER_OTLP_ENDPOINT=https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318
-# OTEL_RESOURCE_ATTRIBUTES=environment=dev,openapm_product_name=my-product,...
-```
-
-### CloudFormation Template for Consumers
-
-Use `cloudformation/consumer-job-definition.yaml`:
+### Required Environment Variables (Both Languages)
 
 ```bash
-aws cloudformation deploy \
-    --stack-name "my-app-dev-jobdef" \
-    --template-file consumer-job-definition.yaml \
-    --parameter-overrides \
-        ServiceName="my-batch-app" \
-        OpenapmProductName="my-product" \
-        ContainerImage="public.ecr.aws/docker/library/python:3.11-slim" \
-        ExecutionRoleArn="arn:aws:iam::723346695882:role/sre-aws-batch-telemetry-dev-execution-role" \
-        JobRoleArn="arn:aws:iam::723346695882:role/sre-aws-batch-telemetry-dev-job-role" \
-    --region us-west-2
+OTEL_SERVICE_NAME=your-service-name
+OTEL_EXPORTER_OTLP_ENDPOINT=https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_RESOURCE_ATTRIBUTES=environment=mon-sandbox,account.id=723346695882,openapm_product_name=your-product,service_name=your-service-name,region=us-west-2
 ```
 
 ---
 
-## Repository Structure
+## 12. Repository Structure
 
 ```
 sre-aws-batch-telemetry-openapm/
-├── README.md                            # This file
+├── README.md                                      # This file — full POC overview
 ├── Makefile
 ├── cloudformation/
-│   ├── master-stack.yaml                # Nested stack orchestrator
-│   ├── batch-compute-environment.yaml   # Fargate compute env
-│   ├── batch-job-queue.yaml             # Job queue
-│   ├── batch-job-definition.yaml        # POC job definition (OTLP/HTTP)
-│   ├── batch-job-definition-firelens.yaml # Alternative with Firelens (if needed)
-│   ├── consumer-job-definition.yaml     # Generic template for consumers
-│   ├── iam-roles.yaml                   # Execution + Job roles
-│   └── security-groups.yaml             # SG with OTLP ports
+│   ├── master-stack.yaml                          # Nested stack orchestrator
+│   ├── batch-compute-environment.yaml             # Fargate compute environment
+│   ├── batch-job-queue.yaml                       # Job queue
+│   ├── batch-job-definition.yaml                  # Python POC job definition
+│   ├── batch-job-definition-java.yaml             # Java POC job definition (working)
+│   ├── batch-job-definition-java-firelens.yaml    # Brian's Firelens approach (evidence)
+│   ├── batch-job-definition-firelens.yaml         # Python Firelens alternative
+│   ├── consumer-job-definition.yaml               # Generic template for consumers
+│   ├── iam-roles.yaml                             # Execution + Job roles
+│   └── security-groups.yaml                       # SG with OTLP ports
 ├── docker/
-│   ├── Dockerfile                       # Original Dockerfile
-│   ├── Dockerfile.base                  # Base image with OTel pre-installed
-│   ├── requirements.txt                 # OTel dependencies
-│   └── fluent-bit/                      # Firelens config (alternative approach)
+│   ├── Dockerfile                                 # Not used (ECR blocked)
+│   ├── Dockerfile.base
+│   ├── requirements.txt
+│   └── fluent-bit/
+│       ├── batch-fluent-bit.conf                  # Custom FB config (Fargate-blocked)
+│       ├── fluent-bit.conf
+│       └── parsers.conf
 ├── docs/
-│   ├── architecture.md                  # Detailed architecture
-│   ├── CONSOLE-DEPLOYMENT-GUIDE.md      # Step-by-step CloudShell guide
-│   └── CONSUMER-ONBOARDING.md           # Consumer onboarding guide
+│   ├── architecture.md
+│   ├── CONSOLE-DEPLOYMENT-GUIDE.md                # Step-by-step CloudShell guide
+│   ├── CONSUMER-ONBOARDING.md
+│   ├── FIRELENS-EVIDENCE.md                       # Brian's Firelens approach evidence
+│   ├── JAVA-POC-SUMMARY.md                        # Java POC full story
+│   └── PYTHON-POC-SUMMARY.md                      # Python POC full story
 ├── examples/
-│   ├── simple_job.py                    # New job example
-│   └── existing_job_retrofit.py         # Retrofit existing job example
-├── src/
-│   ├── batch_job.py                     # POC batch job (all 3 signals)
-│   └── batch_otel/                      # Reusable shared library
-│       ├── __init__.py
-│       ├── instrumentation.py           # Core OTel setup
-│       └── requirements.txt
+│   ├── simple_job.py                              # Minimal new job example
+│   └── existing_job_retrofit.py                   # Retrofit existing Python job
+├── java-poc/
+│   ├── pom.xml                                    # Spring Boot 3.3.13, Java 17
+│   └── src/main/
+│       ├── java/com/nice/sre/batch/
+│       │   └── BatchTelemetryApplication.java     # Main job + SdkLoggerProvider
+│       └── resources/
+│           ├── application.yml                    # Micrometer config
+│           └── logback-spring.xml                 # CONSOLE + OTelAppender
 ├── scripts/
-│   ├── deploy.sh
+│   ├── build-and-deploy-java.sh
 │   ├── build-and-push.sh
+│   ├── deploy.sh
 │   ├── submit-job.sh
 │   ├── upload-code-to-s3.sh
 │   └── cleanup.sh
+├── src/
+│   ├── batch_job.py                               # Python POC job
+│   └── batch_otel/
+│       ├── __init__.py
+│       ├── instrumentation.py                     # OTel SDK setup (traces+metrics+logs)
+│       └── requirements.txt
 └── tests/
     └── test_batch_job.py
 ```
 
 ---
 
-## Comparison with ECS Microservices
+## Quick Reference
 
-| Aspect | ECS Microservices (Java) | AWS Batch (this POC) |
-|--------|--------------------------|---------------------|
-| **Metrics** | Micrometer → OTLP | OTel Python SDK → OTLP/HTTP |
-| **Traces** | OTel/Micrometer → OTLP | OTel Python SDK → OTLP/HTTP |
-| **Logs** | Firelens → Loki | OTel LogExporter → OTLP/HTTP → Loki |
-| **Protocol** | OTLP | OTLP/HTTP (port 4318) |
-| **Network** | PrivateLink | Same PrivateLink VPC Endpoint |
-| **Grafana Labels** | openapm_product_name, service_name | Same labels |
+### Grafana Queries
 
-> **Note:** Firelens is now supported in AWS Batch (April 2025) and can be used as an alternative for log routing if needed. The `batch-job-definition-firelens.yaml` template is provided for this option.
+| Signal | Working Solution | Firelens Branch |
+|---|---|---|
+| Traces | `{service.name="sre-batch-telemetry-java"}` in Tempo | Same ✅ |
+| Metrics | `{service_name="sre-batch-telemetry-java"}` in Mimir | Same ✅ |
+| Logs | `{service_name="sre-batch-telemetry-java"}` in Loki | `{service_name="unknown_service"}` ⚠️ |
 
----
+### CloudShell Commands
 
-## Deployment via CloudShell (No CI/CD)
+```bash
+# Check job status
+aws batch describe-jobs \
+  --jobs <JOB_ID> --region us-west-2 \
+  --query 'jobs[0].[status,statusReason]' --output text
 
-Since there's no pipeline, all deployment is done manually via **AWS CloudShell**:
+# Submit Java job (working solution)
+aws batch submit-job \
+  --job-name sre-batch-java-test \
+  --job-queue sre-aws-batch-telemetry-dev-queue \
+  --job-definition sre-batch-telemetry-java-dev-job \
+  --region us-west-2
 
-1. Upload files via **Actions → Upload file**
-2. Upload code to S3: `aws s3 cp ~/batch_job.py s3://sre-batch-telemetry-code-723346695882/code/`
-3. Deploy CFN: `aws cloudformation deploy --stack-name ... --template-file ...`
-4. Submit job: `aws batch submit-job --job-queue ... --job-definition ...`
-5. Check logs: `aws logs get-log-events --log-group-name /aws/batch/sre-aws-batch-telemetry ...`
+# Submit Firelens job (Brian's approach — evidence)
+aws batch submit-job \
+  --job-name sre-batch-firelens-evidence \
+  --job-queue sre-aws-batch-telemetry-dev-queue \
+  --job-definition sre-batch-telemetry-java-dev-firelens-job \
+  --region us-west-2
 
-See [docs/CONSOLE-DEPLOYMENT-GUIDE.md](docs/CONSOLE-DEPLOYMENT-GUIDE.md) for the full step-by-step guide.
+# View CloudWatch app logs
+aws logs tail /aws/batch/sre-batch-telemetry-java/app \
+  --region us-west-2 --since 30m --format short
 
----
-
-## Validated Test Results
-
-**Job ID:** `677348fb-c280-497f-8cb0-0c38ca26f734` (7 May 2026)
-
-```
-TracerProvider initialised, exporting to https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318
-MeterProvider initialised, exporting to https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318
-LoggerProvider initialised, exporting to https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318
-Fetched 56 items in 0.11s
-Processed 56 items in 0.83s
-Wrote 56 results in 0.10s
-Batch job completed successfully. Items processed: 56
-Job duration: 1.04s, status: 0
-Batch job finished — flushing telemetry…
-OTel providers shut down cleanly.
+# Describe CF stack events (for debugging)
+aws cloudformation describe-stack-events \
+  --stack-name <STACK_NAME> --region us-west-2 \
+  --query 'StackEvents[?contains(ResourceStatus,`FAILED`)].[ResourceType,LogicalResourceId,ResourceStatusReason]' \
+  --output text
 ```
 
-**Result:** All 3 providers (Traces, Metrics, Logs) exported successfully with no errors.
-
----
-
-## Next Steps
-
-1. **Verify Grafana visibility** — Confirm data appears in Tempo, Mimir, and Loki dashboards
-2. **Onboard first consumer** — Work with a real Batch application team to integrate
-3. **CI/CD pipeline** — Automate deployment once validated
-4. **Production rollout** — Move to prod account with proper IAM boundaries
-
----
-
-## Troubleshooting
+### Troubleshooting
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| `ConnectTimeout` on 4318 | SG missing inbound rule on VPC Endpoint | Add TCP 4318 inbound from VPC CIDR |
-| `UNAVAILABLE` on gRPC 4317 | gRPC not supported through this VPC Endpoint | Use HTTP exporter on port 4318 |
-| `404 page not found` | Exporter posting to `/` instead of `/v1/traces` | Append path explicitly in exporter config |
-| `415 Unsupported Media Type` | Wrong Content-Type header | Use OTLP HTTP exporter (sends `application/x-protobuf`) |
+|---|---|---|
+| OTLP export timeout | VPC Endpoint SG missing inbound rule | Add TCP 4318 inbound from VPC CIDR |
+| `UNAVAILABLE` on port 4317 | gRPC not supported through this VPC Endpoint | Use `http/protobuf` on port 4318 |
+| `service_name=unknown_service` in Loki | Spring Boot 3.3 `OpenTelemetry` bean has no-op logger | Use `buildLoggerProvider()` pattern |
+| ECR push denied | Org IAM deny on `ecr:GetAuthorizationToken` | Use public ECR image + S3 code fetch |
+| CF `EarlyValidation` failure | Log group already exists in another stack | Remove log group resource from template |
+| Fargate task size invalid | vCPU total not a valid Fargate size (e.g. 1.25) | Adjust container vCPU so total = 0.5/1/2/4 |
 | No data in Grafana | Missing required labels | Ensure `openapm_product_name` and `service_name` in resource attributes |
-| ECR push denied | Org policy blocks `ecr:GetAuthorizationToken` | Use public image + S3 code fetch |
-| DNS not resolving inside VPC | VPC Endpoint not created or no private DNS | Create Interface VPC Endpoint with private DNS enabled |
 
-## License
+---
 
-Internal POC — not for production use without further review.
-
+*Internal POC — SRE Team, May 2026*
