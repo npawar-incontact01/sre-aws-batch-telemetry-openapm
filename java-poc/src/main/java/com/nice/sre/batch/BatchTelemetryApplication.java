@@ -102,6 +102,11 @@ public class BatchTelemetryApplication implements CommandLineRunner {
         }
 
         // Flush telemetry before exit
+        // Sleep one full metrics step (10s) so Micrometer crosses a step boundary
+        // and exports job.duration, job.items.processed, job.status to Mimir.
+        // Without this, close() fires mid-step and only target_info is shipped.
+        log.info("Waiting 10s for metrics step boundary before flush...");
+        sleep(10000);
         flushTelemetry();
 
         // Wait for Firelens (Fluent Bit) to flush buffered logs via OTLP to Loki.
