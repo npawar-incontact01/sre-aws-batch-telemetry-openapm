@@ -42,7 +42,7 @@ Parameters:
     Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
   FirelensConfigS3Path:
     Type: String
-    Default: "s3://sre-batch-telemetry-code-723346695882/fluent-bit/batch-fluent-bit.conf"
+    Default: "arn:aws:s3:::sre-batch-telemetry-code-723346695882/fluent-bit/batch-fluent-bit.conf"
     Description: >
       S3 path to the Fluent Bit config file. The init-variant image downloads this
       at startup via aws_fluent_bit_init_s3_1 env var — works on Fargate unlike
