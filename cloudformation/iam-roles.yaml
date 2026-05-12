@@ -127,6 +127,14 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:s3:::sre-batch-telemetry-code-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::sre-batch-telemetry-code-${AWS::AccountId}/*"
+              - Sid: AllowCloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/batch/*"
       Tags:
         - Key: Environment
           Value: !Ref EnvironmentName
