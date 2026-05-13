@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Java Batch + Firelens (Brian's approach). Multi-container: app + Fluent Bit sidecar.
+  Java Batch + Firelens (Architect's approach). Multi-container: app + Fluent Bit sidecar.
   Uses aws-for-fluent-bit:init-3.2.4 with S3 custom config (record_modifier +
   logs_body_key_attributes) to set service_name correctly in Loki.
   Pattern from R&D team (notification-manager-dynamic-routed).
@@ -190,7 +190,7 @@ Resources:
         Service: !Ref ServiceName
         Team: !Ref Team
         CostCenter: !Ref CostCenter
-        Approach: "Brian-Firelens"
+        Approach: "Architect-Firelens"
 
 Outputs:
   JobDefinitionArn:

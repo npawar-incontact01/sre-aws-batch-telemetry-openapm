@@ -4,7 +4,7 @@
 
 This project exports all 3 telemetry signals (**traces, metrics, logs**) from AWS Batch jobs (Fargate) in the `mon-sandbox` account to OpenAPM via **OTLP/HTTP on port 4318** through a **VPC Endpoint (PrivateLink)**.
 
-Key design decision: Two approaches implemented and both confirmed working — (A) direct OTLP from the app (`poc/java-aws-batch`) and (B) Firelens sidecar approach matching ECS microservice patterns (`poc/java-firelens-brian-approach`).
+Key design decision: Two approaches implemented and both confirmed working — (A) direct OTLP from the app (`poc/java-aws-batch`) and (B) Firelens sidecar approach matching ECS microservice patterns (`poc/java-firelens-architect-approach`).
 
 ---
 
@@ -200,7 +200,7 @@ Logs emitted:
 
 ## Alternative Approach: Firelens — Confirmed Working ✅
 
-AWS Batch added Firelens support (April 2025). This approach (`poc/java-firelens-brian-approach`) is now fully implemented and confirmed working, matching how ECS microservices operate at NICE.
+AWS Batch added Firelens support (April 2025). This approach (`poc/java-firelens-architect-approach`) is now fully implemented and confirmed working, matching how ECS microservices operate at NICE.
 
 ### Firelens Architecture
 

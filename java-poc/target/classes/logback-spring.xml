@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  BRIAN'S FIRELENS APPROACH — Logback config: CONSOLE (stdout) only.
+  ARCHITECT'S FIRELENS APPROACH — Logback config: CONSOLE (stdout) only.
 
   Log flow:
     SLF4J → Logback → CONSOLE (stdout JSON)

@@ -16,7 +16,7 @@ Prove that a **Java Spring Boot AWS Batch job running on Fargate** can send all 
 | Metrics | Micrometer OTLP Registry | Mimir | `service_name=sre-batch-telemetry-java` | ✅ Working |
 | Logs | OTel Logback Appender + custom `SdkLoggerProvider` | Loki | `service_name=sre-batch-telemetry-java` | ✅ Working |
 
-### Approach B — Firelens (`poc/java-firelens-brian-approach`) — Brian's Recommended Approach
+### Approach B — Firelens (`poc/java-firelens-architect-approach`) — Architect's Recommended Approach
 
 | Signal | Library | Destination | Label in Grafana | Status |
 |--------|---------|-------------|-----------------|--------|

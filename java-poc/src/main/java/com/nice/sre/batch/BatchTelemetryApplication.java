@@ -16,7 +16,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * BRIAN'S FIRELENS APPROACH:
+ * ARCHITECT'S FIRELENS APPROACH:
  *   - Traces  → Micrometer Tracing → OTel → OTLP/HTTP → Tempo           [WORKING ✅]
  *   - Metrics → Micrometer OTLP Registry → OTLP/HTTP → Mimir             [WORKING ✅]
  *   - Logs    → stdout (JSON) → Firelens sidecar → OTLP/HTTP → Loki
@@ -38,7 +38,7 @@ public class BatchTelemetryApplication implements CommandLineRunner {
         this.meterRegistry = meterRegistry;
         this.tracer = tracer;
         // Logs go via stdout → Firelens sidecar → OTLP/HTTP → Loki.
-        // No direct OTel log appender on this branch (Brian's Firelens approach).
+        // No direct OTel log appender on this branch (Architect's Firelens approach).
     }
 
     public static void main(String[] args) {

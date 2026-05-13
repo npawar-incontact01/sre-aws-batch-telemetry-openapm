@@ -1,10 +1,10 @@
-# Firelens Evidence — Brian's Approach: Confirmed Working ✅
+# Firelens Evidence — Architect's Approach: Confirmed Working ✅
 
 ## Background
 
-Architect Brian recommended using **Firelens for log routing** in AWS Batch, consistent with how regular ECS microservices operate at NICE. This document captures the full journey: the initial blocker, the R&D team pattern that resolved it, and the confirmed results.
+Architect recommended using **Firelens for log routing** in AWS Batch, consistent with how regular ECS microservices operate at NICE. This document captures the full journey: the initial blocker, the R&D team pattern that resolved it, and the confirmed results.
 
-**References Brian shared:**
+**References Architect shared:**
 - [AWS Batch multi-container support (Feb 2024)](https://aws.amazon.com/about-aws/whats-new/2024/02/aws-batch-multi-container-jobs/)
 - [Firelens support for AWS Batch (Apr 2025)](https://aws.amazon.com/about-aws/whats-new/2025/04/aws-batch-amazon-elastic-container-service-exec-firelens-log-router/)
 - [Open APM Logs Migration Guide](https://nice-ce-cxone-prod.atlassian.net/wiki/spaces/WFM/pages/3188392157/Open+APM+Logs+Migration+Guide+Log+Routing+with+FireLens)
@@ -13,7 +13,7 @@ Architect Brian recommended using **Firelens for log routing** in AWS Batch, con
 
 ## Final Result ✅
 
-All 3 signals confirmed working with correct `service_name` label using Brian's Firelens approach.
+All 3 signals confirmed working with correct `service_name` label using Architect's Firelens approach.
 
 | Signal | Result | Grafana Query | Confirmed Job |
 |--------|--------|--------------|---------------|
@@ -21,11 +21,11 @@ All 3 signals confirmed working with correct `service_name` label using Brian's 
 | **Metrics** | ✅ Correct `service_name` in Mimir | `job_items_processed_total{service_name="sre-batch-telemetry-java"}` | `7dd4a30b` |
 | **Logs** | ✅ Correct `service_name` in Loki | `{service_name="sre-batch-telemetry-java"}` | `91ef7036` |
 
-**Branch:** `poc/java-firelens-brian-approach`
+**Branch:** `poc/java-firelens-architect-approach`
 
 ---
 
-## Architecture (Brian's Firelens Approach)
+## Architecture (Architect's Firelens Approach)
 
 ```
 AWS Batch Fargate Task (1 vCPU / 2048 MiB)
@@ -184,13 +184,13 @@ Stored at: `arn:aws:s3:::sre-batch-telemetry-code-723346695882/fluent-bit/batch-
 
 ## Final Comparison: Firelens vs Direct OTLP
 
-| | Brian's Firelens (init image) | Direct OTel Logback Appender |
+| | Architect's Firelens (init image) | Direct OTel Logback Appender |
 |---|---|---|
 | `service_name` in Loki | ✅ `sre-batch-telemetry-java` | ✅ `sre-batch-telemetry-java` |
 | Trace-log correlation | ✅ `traceId` + `spanId` in logs | ✅ `traceId` + `spanId` in logs |
 | ECS pattern consistency | ✅ Same as ECS microservices | ❌ App-level change required |
 | Container count | 2 (app + log_router) | 1 |
-| Branch | `poc/java-firelens-brian-approach` | `poc/java-aws-batch` |
+| Branch | `poc/java-firelens-architect-approach` | `poc/java-aws-batch` |
 
 ---
 

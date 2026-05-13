@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-This POC proves that AWS Batch jobs (Java and Python) running on Fargate can send all three observability signals — **Traces, Metrics, and Logs** — into NICE's central OpenAPM platform (Grafana / Tempo / Mimir / Loki) with correct service identity labels. The work involved navigating significant infrastructure constraints, multiple failed approaches, an architectural consultation with Architect Brian, and ultimately delivering **two fully working implementations**.
+This POC proves that AWS Batch jobs (Java and Python) running on Fargate can send all three observability signals — **Traces, Metrics, and Logs** — into NICE's central OpenAPM platform (Grafana / Tempo / Mimir / Loki) with correct service identity labels. The work involved navigating significant infrastructure constraints, multiple failed approaches, an architectural consultation with Architect, and ultimately delivering **two fully working implementations**.
 
 ---
 
@@ -39,19 +39,19 @@ We implemented and tested **3 POCs across 3 Git branches**:
 |---|--------|----------|----------|---------|
 | POC 1 | `poc/python-aws-batch` | Python 3.11 | OTel SDK direct OTLP/HTTP | ✅ All 3 signals working |
 | POC 2 | `poc/java-aws-batch` | Java 17 / Spring Boot 3.3 | Micrometer + OTel Logback Appender (direct) | ✅ All 3 signals working — **Primary Solution** |
-| POC 3 | `poc/java-firelens-brian-approach` | Java 17 / Spring Boot 3.3 | Micrometer + Firelens sidecar | ✅ All 3 signals working — **Brian's Recommended Pattern** |
+| POC 3 | `poc/java-firelens-architect-approach` | Java 17 / Spring Boot 3.3 | Micrometer + Firelens sidecar | ✅ All 3 signals working — **Architect's Recommended Pattern** |
 
 ---
 
-## 3. What Brian Suggested — Architect Recommendation
+## 3. What Architect Suggested — Architect Recommendation
 
-Architect **Brian** reviewed our initial approaches and recommended the **Firelens sidecar pattern** for log routing, citing consistency with how all ECS microservices operate at NICE.
+Architect **Architect** reviewed our initial approaches and recommended the **Firelens sidecar pattern** for log routing, citing consistency with how all ECS microservices operate at NICE.
 
-### Brian's Recommendation (Summary)
+### Architect's Recommendation (Summary)
 
 > "Use Firelens for log routing in Batch — the same pattern used by ECS microservices. Don't route logs from inside the app; use the sidecar."
 
-### References Brian Shared
+### References Architect Shared
 
 | Reference | Link |
 |-----------|------|
@@ -59,7 +59,7 @@ Architect **Brian** reviewed our initial approaches and recommended the **Firele
 | Firelens support for AWS Batch (Apr 2025) | AWS What's New announcement |
 | Open APM Logs Migration Guide (internal) | Confluence: WFM space / Log Routing with FireLens |
 
-### What Brian's Firelens Architecture Looks Like
+### What Architect's Firelens Architecture Looks Like
 
 ```
 AWS Batch Fargate Task (1 vCPU / 2048 MiB total)
@@ -187,9 +187,9 @@ aws batch submit-job \
 
 ---
 
-### POC 3 — Java Firelens / Brian's Approach (`poc/java-firelens-brian-approach`) ✅
+### POC 3 — Java Firelens / Architect's Approach (`poc/java-firelens-architect-approach`) ✅
 
-**Goal:** Implement Brian's recommended Firelens sidecar pattern and confirm it works for Batch.
+**Goal:** Implement Architect's recommended Firelens sidecar pattern and confirm it works for Batch.
 
 #### Build
 - Same Java JAR as POC 2
@@ -327,7 +327,7 @@ OpenTelemetryAppender.install(
 
 ### Blocker 5 — Firelens Logs `service_name=unknown_service` (3 Failed Attempts)
 
-**Symptom:** When using Firelens (Brian's recommended approach), logs arrived with `service_name=unknown_service` regardless of configuration.
+**Symptom:** When using Firelens (Architect's recommended approach), logs arrived with `service_name=unknown_service` regardless of configuration.
 
 **Root cause:**  
 OpenAPM's OTel Collector maps the OTLP **resource attribute** `service.name` to the Loki stream label `service_name`. Standard Firelens sends app stdout as raw OTLP log records with **empty resource attributes**. The `add_label` ECS option adds an HTTP-level stream label only — the Collector ignores it for `service_name` mapping.
@@ -442,7 +442,7 @@ AWS Batch Fargate Task (1 vCPU / 2048 MiB)
 All traffic → VPC Endpoint (PrivateLink) → OpenAPM :4318
 ```
 
-### Solution B — Firelens Sidecar (Brian's Pattern, `poc/java-firelens-brian-approach`)
+### Solution B — Firelens Sidecar (Architect's Pattern, `poc/java-firelens-architect-approach`)
 
 ```
 AWS Batch Fargate Task (1 vCPU / 2048 MiB)
@@ -469,7 +469,7 @@ AWS Batch Fargate Task (1 vCPU / 2048 MiB)
 |--------|-------------------|--------|---------|---------------------|--------|
 | `677348fb` | Python direct OTel | ✅ | ✅ | ✅ correct | SUCCEEDED |
 | `a0dd88f9` | Java direct OTel (`poc/java-aws-batch`) | ✅ | ✅ | ✅ correct | SUCCEEDED |
-| `91ef7036` | Java Firelens init image (`poc/java-firelens-brian-approach`) | ✅ | ✅ | ✅ correct | SUCCEEDED |
+| `91ef7036` | Java Firelens init image (`poc/java-firelens-architect-approach`) | ✅ | ✅ | ✅ correct | SUCCEEDED |
 | `7dd4a30b` | Java Firelens — metrics step boundary fix | ✅ | ✅ | ✅ correct | SUCCEEDED |
 
 ### What Is Validated in Grafana (per run)
@@ -499,7 +499,7 @@ AWS Batch Fargate Task (1 vCPU / 2048 MiB)
 
 ## 9. Comparison: Path A vs Path B
 
-| | Path A — Direct OTel | Path B — Firelens (Brian's) |
+| | Path A — Direct OTel | Path B — Firelens (Architect's) |
 |---|---|---|
 | **`service_name` in Loki** | ✅ Correct | ✅ Correct |
 | **Trace-log correlation** | ✅ `traceId` + `spanId` in logs | ✅ `traceId` + `spanId` in logs |
@@ -515,7 +515,7 @@ AWS Batch Fargate Task (1 vCPU / 2048 MiB)
 
 | Item | Description | Priority |
 |------|-------------|----------|
-| **Architecture decision** | Brian needs to confirm which path (A or B) becomes the NICE standard for Batch telemetry | High |
+| **Architecture decision** | Architect needs to confirm which path (A or B) becomes the NICE standard for Batch telemetry | High |
 | **Python library packaging** | `src/batch_otel/` works but needs `pyproject.toml`, versioning, and publishing to NICE internal PyPI | Medium |
 | **Consumer CloudFormation template** | `cloudformation/consumer-job-definition.yaml` needs validation, VPC integration, and IAM review | Medium |
 | **Grafana dashboard** | No standard dashboard yet for Batch job metrics / alerts | Medium |
@@ -595,7 +595,7 @@ aws cloudformation deploy --stack-name sre-batch-java-dev-jobdef \
   --template-file cloudformation/batch-job-definition-java.yaml \
   --parameter-overrides ExecutionRoleArn=<arn> JobRoleArn=<arn>
 
-# 5b. Firelens job definition (Path B — Brian's Approach)
+# 5b. Firelens job definition (Path B — Architect's Approach)
 aws cloudformation deploy --stack-name sre-batch-java-firelens-jobdef \
   --template-file cloudformation/batch-job-definition-java-firelens.yaml \
   --parameter-overrides ExecutionRoleArn=<arn> JobRoleArn=<arn>

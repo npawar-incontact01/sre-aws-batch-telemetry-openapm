@@ -15,7 +15,7 @@
 6. [End Results](#6-end-results)
 7. [Problems We Faced](#7-problems-we-faced)
 8. [What Is Still Pending](#8-what-is-still-pending)
-9. [Brian's Firelens Approach — Evidence](#9-brians-firelens-approach--evidence)
+9. [Architect's Firelens Approach — Evidence](#9-architects-firelens-approach--evidence)
 10. [Infrastructure Deployed](#10-infrastructure-deployed)
 11. [Consumer Onboarding](#11-consumer-onboarding)
 12. [Repository Structure](#12-repository-structure)
@@ -58,9 +58,9 @@ Three proof-of-concept implementations across three Git branches:
 |---|---|---|---|
 | `poc/python-aws-batch` | Python 3.11 | OTel SDK direct OTLP/HTTP | ✅ Yes |
 | `poc/java-aws-batch` | Java 17 / Spring Boot 3.3 | Micrometer + OTel Logback Appender | ✅ Yes |
-| `poc/java-firelens-brian-approach` | Java 17 / Spring Boot 3.3 | Micrometer + Firelens sidecar | ⚠️ Logs arrive with wrong `service_name` |
+| `poc/java-firelens-architect-approach` | Java 17 / Spring Boot 3.3 | Micrometer + Firelens sidecar | ⚠️ Logs arrive with wrong `service_name` |
 
-The **working solution** is `poc/java-aws-batch`. The Firelens branch provides evidence for the architectural discussion with Architect Brian.
+The **working solution** is `poc/java-aws-batch`. The Firelens branch provides evidence for the architectural discussion with Architect.
 
 ---
 
@@ -81,9 +81,9 @@ Java Spring Boot 3.3.13 batch job:
 Fat JAR built locally, uploaded to S3. No ECR push. No sidecar.  
 See [docs/JAVA-POC-SUMMARY.md](docs/JAVA-POC-SUMMARY.md).
 
-### `poc/java-firelens-brian-approach` — Brian's Firelens Approach ✅
+### `poc/java-firelens-architect-approach` — Architect's Firelens Approach ✅
 
-Implements Architect Brian's recommended approach: **Firelens sidecar for log routing**, same pattern as ECS microservices. Multi-container Batch task (app + Fluent Bit sidecar). All 3 signals working with correct `service_name` in Loki.  
+Implements Architect's recommended approach: **Firelens sidecar for log routing**, same pattern as ECS microservices. Multi-container Batch task (app + Fluent Bit sidecar). All 3 signals working with correct `service_name` in Loki.  
 Uses `aws-for-fluent-bit:init-3.2.4` + S3 custom config (`record_modifier` + `logs_body_key_attributes true`) — pattern from R&D team.  
 See [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md).
 
@@ -115,7 +115,7 @@ AWS Batch Fargate Task (1 vCPU / 2048 MiB)
                       → OTLP/HTTP :4318/v1/logs → VPC Endpoint → Loki ✅
 ```
 
-### Brian's Firelens Approach (`poc/java-firelens-brian-approach`)
+### Architect's Firelens Approach (`poc/java-firelens-architect-approach`)
 
 ```
 AWS Batch Fargate Task (1 vCPU / 2048 MiB total)
@@ -280,7 +280,7 @@ Python 3.11, OTel SDK. Code fetched from S3 at runtime. All signals reach OpenAP
 
 ---
 
-### Brian's Firelens Approach (`poc/java-firelens-brian-approach`) ✅
+### Architect's Firelens Approach (`poc/java-firelens-architect-approach`) ✅
 
 | Signal | Result |
 |--------|--------|
@@ -393,16 +393,16 @@ All pending validation is complete:
 | Branch | Approach | Logs `service_name` | Job confirmed |
 |---|---|---|---|
 | `poc/java-aws-batch` | Direct OTel Logback appender | ✅ `sre-batch-telemetry-java` | Multiple jobs |
-| `poc/java-firelens-brian-approach` | Firelens + init image + S3 config | ✅ `sre-batch-telemetry-java` | Job `91ef7036` |
+| `poc/java-firelens-architect-approach` | Firelens + init image + S3 config | ✅ `sre-batch-telemetry-java` | Job `91ef7036` |
 
-### 8.2 Architecture Decision with Brian
+### 8.2 Architecture Decision with Architect
 
 Two fully working paths forward for log routing in Batch jobs:
 
 | Path | Description | `service_name` correct? | ECS Consistent? | Complexity |
 |---|---|---|---|---|
 | **A — Direct OTel** | OTel Logback appender → OTLP/HTTP direct | ✅ Yes | ❌ App-level change per service | Low |
-| **B — Firelens (Brian's)** | `init` image + S3 config + `record_modifier` + `logs_body_key_attributes` | ✅ Yes | ✅ Yes | Medium |
+| **B — Firelens (Architect's)** | `init` image + S3 config + `record_modifier` + `logs_body_key_attributes` | ✅ Yes | ✅ Yes | Medium |
 
 Both paths are implemented and confirmed working. Path B matches ECS microservice patterns.
 
@@ -433,7 +433,7 @@ All testing done in `us-west-2` only. If Batch jobs run in other regions, the VP
 
 ---
 
-## 9. Brian's Firelens Approach — Evidence
+## 9. Architect's Firelens Approach — Evidence
 
 Full evidence: [docs/FIRELENS-EVIDENCE.md](docs/FIRELENS-EVIDENCE.md)
 
@@ -472,7 +472,7 @@ OTLP log record (from Firelens with init image + custom config)
 
 ### Comparison: Firelens (init image) vs Direct OTLP
 
-| | Brian's Firelens (init image) | Working Solution (Direct OTLP) |
+| | Architect's Firelens (init image) | Working Solution (Direct OTLP) |
 |---|---|---|
 | `service_name` label | ✅ `sre-batch-telemetry-java` | ✅ `sre-batch-telemetry-java` |
 | Trace-log correlation | ✅ `traceId` + `spanId` in every log | ✅ `traceId` + `spanId` in every log |
@@ -571,7 +571,7 @@ sre-aws-batch-telemetry-openapm/
 │   ├── batch-job-queue.yaml                       # Job queue
 │   ├── batch-job-definition.yaml                  # Python POC job definition
 │   ├── batch-job-definition-java.yaml             # Java POC job definition (working)
-│   ├── batch-job-definition-java-firelens.yaml    # Brian's Firelens approach (evidence)
+│   ├── batch-job-definition-java-firelens.yaml    # Architect's Firelens approach (evidence)
 │   ├── batch-job-definition-firelens.yaml         # Python Firelens alternative
 │   ├── consumer-job-definition.yaml               # Generic template for consumers
 │   ├── iam-roles.yaml                             # Execution + Job roles
@@ -588,7 +588,7 @@ sre-aws-batch-telemetry-openapm/
 │   ├── architecture.md
 │   ├── CONSOLE-DEPLOYMENT-GUIDE.md                # Step-by-step CloudShell guide
 │   ├── CONSUMER-ONBOARDING.md
-│   ├── FIRELENS-EVIDENCE.md                       # Brian's Firelens approach evidence
+│   ├── FIRELENS-EVIDENCE.md                       # Architect's Firelens approach evidence
 │   ├── JAVA-POC-SUMMARY.md                        # Java POC full story
 │   └── PYTHON-POC-SUMMARY.md                      # Python POC full story
 ├── examples/
@@ -646,7 +646,7 @@ aws batch submit-job \
   --job-definition sre-batch-telemetry-java-dev-job \
   --region us-west-2
 
-# Submit Firelens job (Brian's approach — evidence)
+# Submit Firelens job (Architect's approach — evidence)
 aws batch submit-job \
   --job-name sre-batch-firelens-evidence \
   --job-queue sre-aws-batch-telemetry-dev-queue \
