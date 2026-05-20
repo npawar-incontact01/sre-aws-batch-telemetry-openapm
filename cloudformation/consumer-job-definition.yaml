@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Generic AWS Batch Job Definition with OpenTelemetry + Firelens log routing.
+  Traces/metrics go direct via OTLP/HTTP to OpenAPM.
+  Logs go via Firelens (Fluent Bit) to Loki — consistent with ECS microservices.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Description: Consumer's service/application name (used as OTEL_SERVICE_NAME and in Grafana)
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  ContainerImage:
+    Type: String
+    Description: Consumer's container image URI
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Batch Execution Role (ECR pull, CloudWatch logs)
+  JobRoleArn:
+    Type: String
+    Description: ARN of the Batch Job Role (S3, SSM, etc.)
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
+    Description: OTLP HTTP endpoint for traces and metrics (port 4318)
+  LokiEndpointHost:
+    Type: String
+    Default: "apm-na1.mon-sandbox.nicecxone-sbx.com"
+    Description: Loki host for Firelens log ingestion
+  LokiEndpointPort:
+    Type: String
+    Default: "3100"
+    Description: Loki port for Firelens log ingestion
+  OpenapmProductName:
+    Type: String
+    Description: Product name for Grafana filtering (openapm_product_name label)
+  Region:
+    Type: String
+    Default: us-west-2
+  AccountId:
+    Type: String
+    Default: "723346695882"
+  JobVcpu:
+    Type: String
+    Default: "0.25"
+    AllowedValues: ["0.25", "0.5", "1", "2", "4"]
+  JobMemory:
+    Type: String
+    Default: "512"
+    AllowedValues: ["512", "1024", "2048", "4096", "8192"]
+  JobTimeoutSeconds:
+    Type: Number
+    Default: 600
+  Command:
+    Type: CommaDelimitedList
+    Default: "python3,/app/main.py"
+    Description: Container command to run
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}"
+      RetentionInDays: 14
+      Tags:
+        - Key: Team
+          Value: !Ref Team
+        - Key: Service
+          Value: !Ref ServiceName
+
+  FirelensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}/firelens"
+      RetentionInDays: 7
+      Tags:
+        - Key: Team
+          Value: !Ref Team
+        - Key: Service
+          Value: !Ref ServiceName
+
+  JobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub "${ServiceName}-${EnvironmentName}-job"
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      Timeout:
+        AttemptDurationInSeconds: !Ref JobTimeoutSeconds
+      RetryStrategy:
+        Attempts: 1
+      ContainerProperties:
+        Image: !Ref ContainerImage
+        Command: !Ref Command
+        ResourceRequirements:
+          - Type: VCPU
+            Value: !Ref JobVcpu
+          - Type: MEMORY
+            Value: !Ref JobMemory
+        ExecutionRoleArn: !Ref ExecutionRoleArn
+        JobRoleArn: !Ref JobRoleArn
+        NetworkConfiguration:
+          AssignPublicIp: DISABLED
+        LogConfiguration:
+          LogDriver: awsfirelens
+          Options:
+            Name: grafana-loki
+            Url: !Sub "https://${LokiEndpointHost}:${LokiEndpointPort}/loki/api/v1/push"
+            Labels: !Sub "{job=\"aws-batch\",service_name=\"${ServiceName}\",environment=\"${EnvironmentName}\",openapm_product_name=\"${OpenapmProductName}\",region=\"${Region}\"}"
+            RemoveKeys: "container_id,ecs_task_arn"
+            LabelKeys: "level,logger"
+            LineFormat: "key_value"
+            Tls: "On"
+            TlsVerify: "On"
+        Environment:
+          - Name: OTEL_SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+            Value: !Ref OtelEndpoint
+          - Name: OTEL_RESOURCE_ATTRIBUTES
+            Value: !Sub "environment=${EnvironmentName},account.id=${AccountId},openapm_product_name=${OpenapmProductName},service_name=${ServiceName},region=${Region}"
+          - Name: PYTHONUNBUFFERED
+            Value: "1"
+      Tags:
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+        Service: !Ref ServiceName
+        Environment: !Ref EnvironmentName
+
+Outputs:
+  JobDefinitionArn:
+    Value: !Ref JobDefinition
+    Export:
+      Name: !Sub "${ServiceName}-${EnvironmentName}-jobdef-arn"
+  LogGroupName:
+    Value: !Ref LogGroup

@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS Batch Job Definition for sre-aws-batch-telemetry.
+  Fargate platform with OTLP environment variables pre-configured.
+  Uses a public Python image and fetches application code from S3 at runtime.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  ServiceName:
+    Type: String
+    Default: sre-aws-batch-telemetry
+  ContainerImage:
+    Type: String
+    Default: "public.ecr.aws/docker/library/python:3.11-slim"
+    Description: >
+      Container image URI. Defaults to public Python 3.11 slim image.
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+    Description: S3 bucket containing batch_job.py and requirements.txt
+  CodeS3Prefix:
+    Type: String
+    Default: "code"
+    Description: S3 key prefix where code files are stored
+  ExecutionRoleArn:
+    Type: String
+    Description: ARN of the Batch Execution Role (from iam-roles stack)
+  JobRoleArn:
+    Type: String
+    Description: ARN of the Batch Job Role (from iam-roles stack)
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4318"
+    Description: OTLP exporter endpoint
+  OtelResourceAttributes:
+    Type: String
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2"
+    Description: Additional OTel resource attributes (key=value comma-separated)
+  JobVcpu:
+    Type: String
+    Default: "0.25"
+    Description: vCPU allocation for the Fargate task
+  JobMemory:
+    Type: Number
+    Default: 512
+    Description: Memory (MiB) allocation for the Fargate task
+  Team:
+    Type: String
+    Default: sre
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub "${ServiceName}-${EnvironmentName}-job"
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      ContainerProperties:
+        Image: !Ref ContainerImage
+        Command:
+          - "/bin/sh"
+          - "-c"
+          - !Sub |
+              pip install --no-cache-dir awscli >/dev/null 2>&1 && \
+              mkdir -p /app && cd /app && \
+              aws s3 cp s3://${CodeS3Bucket}/${CodeS3Prefix}/requirements.txt . && \
+              aws s3 cp s3://${CodeS3Bucket}/${CodeS3Prefix}/batch_job.py . && \
+              pip install --no-cache-dir -r requirements.txt && \
+              python batch_job.py
+        ExecutionRoleArn: !Ref ExecutionRoleArn
+        JobRoleArn: !Ref JobRoleArn
+        FargatePlatformConfiguration:
+          PlatformVersion: LATEST
+        ResourceRequirements:
+          - Type: VCPU
+            Value: !Ref JobVcpu
+          - Type: MEMORY
+            Value: !Sub "${JobMemory}"
+        Environment:
+          - Name: OTEL_EXPORTER_OTLP_ENDPOINT
+            Value: !Ref OtelEndpoint
+          - Name: OTEL_SERVICE_NAME
+            Value: !Ref ServiceName
+          - Name: OTEL_RESOURCE_ATTRIBUTES
+            Value: !Ref OtelResourceAttributes
+          - Name: PYTHONUNBUFFERED
+            Value: "1"
+          - Name: CODE_S3_BUCKET
+            Value: !Ref CodeS3Bucket
+          - Name: CODE_S3_PREFIX
+            Value: !Ref CodeS3Prefix
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Sub "/aws/batch/${ServiceName}"
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: !Ref EnvironmentName
+        NetworkConfiguration:
+          AssignPublicIp: DISABLED
+      RetryStrategy:
+        Attempts: 2
+      Timeout:
+        AttemptDurationSeconds: 600
+      Tags:
+        Environment: !Ref EnvironmentName
+        Service: !Ref ServiceName
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+
+  BatchJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/batch/${ServiceName}"
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Team
+          Value: !Ref Team
+        - Key: CostCenter
+          Value: !Ref CostCenter
+
+Outputs:
+  JobDefinitionArn:
+    Description: ARN of the Batch Job Definition
+    Value: !Ref BatchJobDefinition
+    Export:
+      Name: !Sub "${AWS::StackName}-JobDefinitionArn"
+
+  JobDefinitionName:
+    Description: Name of the Batch Job Definition
+    Value: !Sub "${ServiceName}-${EnvironmentName}-job"
+    Export:
+      Name: !Sub "${AWS::StackName}-JobDefinitionName"

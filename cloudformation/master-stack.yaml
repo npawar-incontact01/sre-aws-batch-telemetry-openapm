@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Master (nested) stack for sre-aws-batch-telemetry.
+  Orchestrates: IAM Roles, Security Groups, Compute Environment, Job Queue,
+  and Job Definition stacks.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    Description: Deployment environment name (e.g. dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  ServiceName:
+    Type: String
+    Default: sre-aws-batch-telemetry
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where Batch Fargate tasks will run
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Comma-separated list of private subnet IDs
+
+  ContainerImage:
+    Type: String
+    Default: "public.ecr.aws/docker/library/python:3.11-slim"
+    Description: >
+      Container image URI. Defaults to public Python 3.11 slim image.
+
+  CodeS3Bucket:
+    Type: String
+    Default: "sre-batch-telemetry-code-723346695882"
+    Description: S3 bucket containing batch_job.py and requirements.txt
+
+  CodeS3Prefix:
+    Type: String
+    Default: "code"
+    Description: S3 key prefix where code files are stored
+
+  OtelEndpoint:
+    Type: String
+    Default: "https://apm-na1.mon-sandbox.nicecxone-sbx.com:4317"
+
+  OtelResourceAttributes:
+    Type: String
+    Default: "environment=mon-sandbox,account.id=723346695882,openapm_product_name=sre-batch-telemetry,service_name=sre-aws-batch-telemetry,region=us-west-2"
+
+  OtelEndpointCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: CIDR of the OTel Collector endpoint for Security Group egress rule
+
+  MaxvCpus:
+    Type: Number
+    Default: 16
+
+  JobVcpu:
+    Type: String
+    Default: "0.25"
+
+  JobMemory:
+    Type: Number
+    Default: 512
+
+  TemplatesBucketName:
+    Type: String
+    Description: S3 bucket name containing the nested CloudFormation templates
+
+  Team:
+    Type: String
+    Default: sre
+
+  CostCenter:
+    Type: String
+    Default: "0000"
+
+Resources:
+
+  IamRolesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/cloudformation/iam-roles.yaml"
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ServiceName: !Ref ServiceName
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+
+  SecurityGroupsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/cloudformation/security-groups.yaml"
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ServiceName: !Ref ServiceName
+        VpcId: !Ref VpcId
+        OtelEndpointCidr: !Ref OtelEndpointCidr
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+
+  ComputeEnvironmentStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: SecurityGroupsStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/cloudformation/batch-compute-environment.yaml"
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ServiceName: !Ref ServiceName
+        SubnetIds: !Join [",", !Ref SubnetIds]
+        SecurityGroupId: !GetAtt SecurityGroupsStack.Outputs.BatchTaskSecurityGroupId
+        MaxvCpus: !Ref MaxvCpus
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+
+  JobQueueStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ComputeEnvironmentStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/cloudformation/batch-job-queue.yaml"
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ServiceName: !Ref ServiceName
+        ComputeEnvironmentArn: !GetAtt ComputeEnvironmentStack.Outputs.ComputeEnvironmentArn
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+
+  JobDefinitionStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - IamRolesStack
+      - JobQueueStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/cloudformation/batch-job-definition.yaml"
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        ServiceName: !Ref ServiceName
+        ContainerImage: !Ref ContainerImage
+        CodeS3Bucket: !Ref CodeS3Bucket
+        CodeS3Prefix: !Ref CodeS3Prefix
+        ExecutionRoleArn: !GetAtt IamRolesStack.Outputs.BatchExecutionRoleArn
+        JobRoleArn: !GetAtt IamRolesStack.Outputs.BatchJobRoleArn
+        OtelEndpoint: !Ref OtelEndpoint
+        OtelResourceAttributes: !Ref OtelResourceAttributes
+        JobVcpu: !Ref JobVcpu
+        JobMemory: !Ref JobMemory
+        Team: !Ref Team
+        CostCenter: !Ref CostCenter
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: Service
+          Value: !Ref ServiceName
+
+Outputs:
+  JobQueueName:
+    Description: Batch Job Queue name (use for job submission)
+    Value: !GetAtt JobQueueStack.Outputs.JobQueueName
+
+  JobDefinitionName:
+    Description: Batch Job Definition name (use for job submission)
+    Value: !GetAtt JobDefinitionStack.Outputs.JobDefinitionName
+
+  ExecutionRoleArn:
+    Description: Batch Execution Role ARN
+    Value: !GetAtt IamRolesStack.Outputs.BatchExecutionRoleArn
+
+  JobRoleArn:
+    Description: Batch Job Role ARN
+    Value: !GetAtt IamRolesStack.Outputs.BatchJobRoleArn
